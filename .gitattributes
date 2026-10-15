@@ -1,0 +1,3 @@
+# Godot uses LF line endings; Windows batch files need CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
