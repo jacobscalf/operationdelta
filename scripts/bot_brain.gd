@@ -2,14 +2,24 @@ extends Node
 ## Simple AI for a bot soldier. Runs only on the host, as a child of the bot's player node.
 ## Every physics frame think() decides where to walk, where to look, and when to shoot.
 ##
-## Behaviour: wander between open spots on the map. When an enemy is in plain sight,
-## stop, crouch, turn toward them, wait a moment to "react", then fire short bursts
-## with some built-in inaccuracy so it can be beaten.
+## Behaviour: at the start of each life, pick one of a few routes across the map and
+## follow it toward the enemy side, then wander between open spots. When an enemy is in
+## plain sight, stop, crouch, turn toward them, wait a moment to "react", then fire short
+## bursts with some built-in inaccuracy so it can be beaten.
 
 const STAND := 0
 const CROUCH := 1
 
-## Open spots on Range 01 the bot wanders between.
+## Routes across Range 01, listed from the north (Terrorist) end to the south (Ops) end.
+## Ops bots walk them in reverse.
+const ROUTES := [
+	[Vector3(-40, 0, -40), Vector3(-40, 0, -20), Vector3(-38, 0, 0), Vector3(-35, 0, 20), Vector3(-30, 0, 40)],
+	[Vector3(-10, 0, -30), Vector3(-12, 0, -8), Vector3(-12, 0, 15), Vector3(-5, 0, 35)],
+	[Vector3(10, 0, -30), Vector3(12, 0, -10), Vector3(12, 0, 10), Vector3(5, 0, 35)],
+	[Vector3(40, 0, -30), Vector3(42, 0, -10), Vector3(35, 0, 10), Vector3(35, 0, 30), Vector3(20, 0, 40)],
+]
+
+## Open spots on Range 01 the bot wanders between once its route is done.
 const WAYPOINTS: Array[Vector3] = [
 	Vector3(0, 0, 30), Vector3(-15, 0, 30), Vector3(15, 0, 30), Vector3(-35, 0, 20),
 	Vector3(35, 0, 20), Vector3(-12, 0, 10), Vector3(12, 0, 10), Vector3(0, 0, -12),
@@ -41,9 +51,22 @@ var _look_timer := 0.0
 var _burst_left := 0
 var _shot_timer := 0.0
 var _goal := Vector3.INF
+var _route: Array[Vector3] = []  # remaining route points for this life
 var _stuck_timer := 0.0
 var _last_position := Vector3.ZERO
 var _aim_error := 0.0
+
+
+## Called when the bot (re)spawns: forget the last life and pick a fresh route.
+func reset() -> void:
+	_target = null
+	_seen_for = 0.0
+	_burst_left = 0
+	_stuck_timer = 0.0
+	_route.assign(ROUTES[randi() % ROUTES.size()])
+	if body.get("team") == 0:  # Ops start in the south, so walk the route backwards
+		_route.reverse()
+	_goal = _route.pop_front()
 
 
 ## Returns the movement input (x = right, y = back) just like WASD would.
@@ -151,6 +174,9 @@ func _walk(delta: float) -> Vector2:
 
 
 func _pick_new_goal() -> void:
+	if not _route.is_empty():
+		_goal = _route.pop_front()  # follow this life's route first
+		return
 	var choice := WAYPOINTS[randi() % WAYPOINTS.size()]
 	while choice == _goal:
 		choice = WAYPOINTS[randi() % WAYPOINTS.size()]

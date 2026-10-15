@@ -40,7 +40,7 @@ const SHOULDER := 0.55
 const CAMERA_SMOOTH := 12.0
 
 # --- Weapon (assault rifle) --------------------------------------------------
-const DAMAGE := 25.0
+const DAMAGE := 20.0  # 5 body shots to kill
 const FIRE_INTERVAL := 0.1  # 600 rounds per minute
 const MAG_SIZE := 30
 const START_RESERVE := 300
@@ -69,7 +69,7 @@ const MAX_IMPACTS := 64
 # --- Health ------------------------------------------------------------------
 const MAX_HEALTH := 100.0
 const HEAD_SIZE := 0.3  # top 30 cm of the body counts as the head
-const HEADSHOT_MULT := 4.0
+const HEADSHOT_MULT := 2.5  # 50 damage: 2 headshots to kill
 
 ## Uniform colors: Ops in olive drab, Terrorists in charcoal.
 const TEAM_BODY_COLORS := [Color(0.33, 0.37, 0.25), Color(0.2, 0.19, 0.18)]
@@ -737,6 +737,8 @@ func _respawn(spawn_point: Vector3) -> void:
 	_body_mesh.visible = true
 	_gun.visible = true
 	if is_multiplayer_authority():  # the computer that controls this soldier (bots: the host)
+		if _brain:
+			_brain.reset()
 		global_position = spawn_point
 		velocity = Vector3.ZERO
 		stance = Stance.STAND
