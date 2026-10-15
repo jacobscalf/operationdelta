@@ -21,6 +21,11 @@ const STANCE_SPEED := { Stance.STAND: 4.0, Stance.CROUCH: 2.0, Stance.PRONE: 0.8
 const SPRINT_SPEED := 6.5
 const AIM_MOVE_MULT := 0.6
 const ACCEL := 30.0
+const AIR_ACCEL := 4.0  # little steering once you've left the ground
+const JUMP_VELOCITY := 4.8  # just enough to clear a 1 m wall
+const JUMP_COOLDOWN := 0.8
+const LANDING_SLOW := 0.35  # seconds of reduced speed after landing
+const LANDING_SPEED_MULT := 0.5
 
 # --- Camera ------------------------------------------------------------------
 const MOUSE_SENS := 0.0025
@@ -85,6 +90,9 @@ var alive := true
 var _is_local := false
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 var _recoil := 0.0  # extra upward view from firing; drifts back to zero
+var _jump_cooldown := 0.0
+var _landing_slow := 0.0
+var _was_on_floor := true
 var _shoulder_side := 1.0
 var _ammo := MAG_SIZE
 var _reserve := START_RESERVE
@@ -304,13 +312,27 @@ func _physics_process(delta: float) -> void:
 	var speed: float = SPRINT_SPEED if sprinting else STANCE_SPEED[stance]
 	if aiming:
 		speed *= AIM_MOVE_MULT
+	if _landing_slow > 0.0:
+		speed *= LANDING_SPEED_MULT
+
+	_jump_cooldown = maxf(_jump_cooldown - delta, 0.0)
+	_landing_slow = maxf(_landing_slow - delta, 0.0)
 
 	if alive:  # Dead bodies have no collision, so they must not fall.
-		if not is_on_floor():
+		var on_floor := is_on_floor()
+		if not on_floor:
 			velocity.y -= _gravity * delta
+		elif not _was_on_floor:
+			_landing_slow = LANDING_SLOW
+		_was_on_floor = on_floor
+
+		if captured and on_floor and Input.is_action_just_pressed("jump"):
+			_try_jump()
+
 		var target := transform.basis * Vector3(input.x, 0.0, input.y) * speed
-		velocity.x = move_toward(velocity.x, target.x, ACCEL * delta)
-		velocity.z = move_toward(velocity.z, target.z, ACCEL * delta)
+		var accel := ACCEL if on_floor else AIR_ACCEL
+		velocity.x = move_toward(velocity.x, target.x, accel * delta)
+		velocity.z = move_toward(velocity.z, target.z, accel * delta)
 		move_and_slide()
 
 	_update_camera(delta)
@@ -379,7 +401,18 @@ func _update_weapon(delta: float, sprinting: bool, captured: bool) -> void:
 	)
 
 
-# --- Stances ---------------------------------------------------------------------
+# --- Jumping and stances ------------------------------------------------------------
+
+## Like SOCOM: a short hop for getting over low walls. From crouch or prone, Space stands you up.
+func _try_jump() -> void:
+	if stance != Stance.STAND:
+		_try_stance(Stance.STAND)
+		return
+	if _jump_cooldown > 0.0 or _landing_slow > 0.0:
+		return
+	velocity.y = JUMP_VELOCITY
+	_jump_cooldown = JUMP_COOLDOWN
+
 
 func _try_stance(new_stance: Stance) -> void:
 	var new_height: float = STANCE_HEIGHT[new_stance]

@@ -8,6 +8,7 @@ const KEYS := {
 	"move_left": [KEY_A],
 	"move_right": [KEY_D],
 	"sprint": [KEY_SHIFT],
+	"jump": [KEY_SPACE],
 	"crouch": [KEY_C, KEY_CTRL],
 	"prone": [KEY_Z],
 	"reload": [KEY_R],

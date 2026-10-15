@@ -4,7 +4,7 @@ extends CanvasLayer
 
 const CROSSHAIR_COLOR := Color(0.55, 1.0, 0.55, 0.9)
 const TEXT_COLOR := Color(0.92, 0.92, 0.88)
-const HELP_TEXT := "WASD move   Shift sprint   C crouch   Z prone   RMB aim   LMB fire   R reload   Q swap shoulder   Esc pause"
+const HELP_TEXT := "WASD move   Shift sprint   Space jump   C crouch   Z prone   RMB aim   LMB fire   R reload   Q swap shoulder   Esc pause"
 const FEED_TIME := 6.0  # seconds a kill-feed line stays up
 const FEED_LINES := 5
 
