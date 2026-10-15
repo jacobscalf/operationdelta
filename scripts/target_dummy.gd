@@ -51,7 +51,7 @@ func _physics_process(delta: float) -> void:
 
 
 ## Called by the player's bullets. Returns true if this hit killed the target.
-func take_hit(damage: float, hit_point: Vector3) -> bool:
+func take_hit(damage: float, hit_point: Vector3, _attacker_id: int = 0) -> bool:
 	if _dead:
 		return false
 	var is_headshot := hit_point.y - global_position.y > HEAD_HEIGHT

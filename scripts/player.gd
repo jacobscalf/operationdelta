@@ -1,6 +1,12 @@
 extends CharacterBody3D
-## The local player: third-person movement, stances, aiming and shooting.
-## The whole character (body, camera, gun, HUD) is built in code in _ready().
+## A soldier. Every player in a match is one of these, on every computer.
+##
+## Who controls what:
+## - The player's own computer (its "authority") controls movement, aiming and stance,
+##   and those are copied to everyone else by a MultiplayerSynchronizer.
+## - The host decides whether shots hit, and owns health, deaths and respawns,
+##   so a player can't cheat damage on their own machine.
+## The whole character (body, camera, gun, name tag, HUD) is built in code in _ready().
 
 const HudScript := preload("res://scripts/hud.gd")
 
@@ -9,8 +15,8 @@ enum Stance { STAND, CROUCH, PRONE }
 # --- Body and movement -------------------------------------------------------
 const RADIUS := 0.35
 const STANCE_NAMES := { Stance.STAND: "STANDING", Stance.CROUCH: "CROUCHED", Stance.PRONE: "PRONE" }
-const STANCE_HEIGHT := { Stance.STAND: 1.8, Stance.CROUCH: 1.2, Stance.PRONE: 0.7 }
-const STANCE_EYE := { Stance.STAND: 1.6, Stance.CROUCH: 1.05, Stance.PRONE: 0.45 }
+const STANCE_HEIGHT := { Stance.STAND: 1.8, Stance.CROUCH: 1.3, Stance.PRONE: 0.7 }
+const STANCE_EYE := { Stance.STAND: 1.6, Stance.CROUCH: 1.2, Stance.PRONE: 0.45 }
 const STANCE_SPEED := { Stance.STAND: 4.0, Stance.CROUCH: 2.0, Stance.PRONE: 0.8 }
 const SPRINT_SPEED := 6.5
 const AIM_MOVE_MULT := 0.6
@@ -37,6 +43,8 @@ const RECOIL_PITCH := 0.008  # radians the view kicks up per shot
 const RECOIL_YAW := 0.0025  # random sideways kick per shot
 const RECOIL_MAX := 0.1  # the most the view can climb from recoil
 const RECOIL_RECOVERY := 0.15  # radians per second the view settles back down
+## Where bullets really leave from, relative to the camera pivot: right shoulder, slightly low.
+const SHOULDER_OFFSET := Vector3(0.24, -0.12, 0.0)
 
 # --- Accuracy (degrees, half-angle of the cone a bullet can land in) ---------
 # The crosshair shows this cone. Like SOCOM, it tightens when you stay still,
@@ -51,11 +59,31 @@ const SPREAD_SETTLE := 3.0  # how fast the crosshair tightens (higher = faster)
 const MAX_SPREAD := 4.0
 const MAX_IMPACTS := 64
 
-var stance: Stance = Stance.STAND
-var aiming := false
+# --- Health ------------------------------------------------------------------
+const MAX_HEALTH := 100.0
+const HEAD_SIZE := 0.3  # top 30 cm of the body counts as the head
+const HEADSHOT_MULT := 4.0
+const RESPAWN_TIME := 5.0
 
+const OWN_COLOR := Color(0.33, 0.37, 0.25)  # olive drab
+const OTHER_COLOR := Color(0.45, 0.3, 0.22)  # everyone else, until we add teams
+
+# --- Synced to every computer by the MultiplayerSynchronizer (see _build_sync) ---
+var pitch := 0.0
+var aiming := false
+var display_name := "Player"
+var stance: Stance = Stance.STAND:
+	set(value):
+		stance = value
+		if is_node_ready():
+			_apply_stance_shape()
+
+# --- Set by the host through RPCs ---
+var health := MAX_HEALTH
+var alive := true
+
+var _is_local := false
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
-var _pitch := 0.0
 var _recoil := 0.0  # extra upward view from firing; drifts back to zero
 var _shoulder_side := 1.0
 var _ammo := MAG_SIZE
@@ -70,33 +98,46 @@ var _impacts: Array[Node3D] = []
 var _collision: CollisionShape3D
 var _capsule: CapsuleShape3D
 var _body_mesh: MeshInstance3D
+var _body_material: StandardMaterial3D
 var _pivot: Node3D
 var _arm: SpringArm3D
 var _camera: Camera3D
 var _muzzle: Node3D
 var _flash_light: OmniLight3D
+var _name_tag: Label3D
 var _hud: HudScript
 var _tracer_material: StandardMaterial3D
 var _impact_material: StandardMaterial3D
 
 
 func _ready() -> void:
-	add_to_group("player")
+	add_to_group("players")
+	_is_local = is_multiplayer_authority()
 	_build_body()
 	_build_camera()
 	_build_gun()
+	_build_name_tag()
 	_build_effect_materials()
-	_hud = HudScript.new()
-	add_child(_hud)
-	_apply_stance(Stance.STAND)
-	_pivot.position.y = STANCE_EYE[Stance.STAND]
-	# The mouse stays free until the player clicks into the game (see the HUD's pause screen).
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_build_sync()
+	_apply_stance_shape()
+	_pivot.position.y = STANCE_EYE[stance]
+
+	if _is_local:
+		add_to_group("local_player")
+		display_name = Network.player_name
+		_camera.current = true
+		_name_tag.visible = false
+		_hud = HudScript.new()
+		add_child(_hud)
+		# The mouse stays free until the player clicks into the game (see the HUD's pause screen).
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	else:
+		_body_material.albedo_color = OTHER_COLOR
 
 
 func _notification(what: int) -> void:
 	# Never keep the mouse locked when the game window isn't the active window.
-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and _is_local:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
@@ -109,14 +150,14 @@ func _build_body() -> void:
 	_collision.shape = _capsule
 	add_child(_collision)
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.33, 0.37, 0.25)  # olive drab
-	mat.roughness = 0.8
+	_body_material = StandardMaterial3D.new()
+	_body_material.albedo_color = OWN_COLOR
+	_body_material.roughness = 0.8
 	_body_mesh = MeshInstance3D.new()
 	var mesh := CapsuleMesh.new()
 	mesh.radius = RADIUS
 	_body_mesh.mesh = mesh
-	_body_mesh.material_override = mat
+	_body_mesh.material_override = _body_material
 	add_child(_body_mesh)
 
 
@@ -136,7 +177,6 @@ func _build_camera() -> void:
 	_camera = Camera3D.new()
 	_camera.fov = FOV
 	_arm.add_child(_camera)
-	_camera.current = true
 
 
 func _build_gun() -> void:
@@ -149,7 +189,7 @@ func _build_gun() -> void:
 	box.size = Vector3(0.08, 0.12, 0.75)
 	gun.mesh = box
 	gun.material_override = mat
-	gun.position = Vector3(0.24, -0.22, -0.45)
+	gun.position = SHOULDER_OFFSET + Vector3(0, 0, -0.45)
 	_pivot.add_child(gun)
 
 	_muzzle = Node3D.new()
@@ -163,6 +203,16 @@ func _build_gun() -> void:
 	_muzzle.add_child(_flash_light)
 
 
+func _build_name_tag() -> void:
+	_name_tag = Label3D.new()
+	_name_tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_name_tag.font_size = 48
+	_name_tag.pixel_size = 0.004
+	_name_tag.outline_size = 12
+	_name_tag.modulate = Color(1, 0.85, 0.75)
+	add_child(_name_tag)
+
+
 func _build_effect_materials() -> void:
 	_tracer_material = StandardMaterial3D.new()
 	_tracer_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -173,22 +223,44 @@ func _build_effect_materials() -> void:
 	_impact_material.roughness = 1.0
 
 
-# --- Input ----------------------------------------------------------------------
+## Lists which properties get copied from this player's owner to every other computer.
+func _build_sync() -> void:
+	var config := SceneReplicationConfig.new()
+	for property: String in [":position", ":rotation", ":pitch", ":stance", ":aiming"]:
+		var path := NodePath("." + property)
+		config.add_property(path)
+		config.property_set_spawn(path, true)
+		config.property_set_replication_mode(path, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
+	var name_path := NodePath(".:display_name")
+	config.add_property(name_path)
+	config.property_set_spawn(name_path, true)
+	config.property_set_replication_mode(name_path, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+
+	var sync := MultiplayerSynchronizer.new()
+	sync.name = "Sync"
+	sync.replication_config = config
+	sync.set_multiplayer_authority(get_multiplayer_authority())
+	add_child(sync)
+
+
+# --- Input (own player only) ---------------------------------------------------
 
 ## Mouse look is read here, before the on-screen interface sees the event,
 ## so no HUD element can ever swallow it.
 func _input(event: InputEvent) -> void:
-	if not event is InputEventMouseMotion:
+	if not _is_local or not event is InputEventMouseMotion:
 		return
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		return
 	var motion := event as InputEventMouseMotion
 	var sens := MOUSE_SENS * (AIM_SENS_MULT if aiming else 1.0)
 	rotation.y -= motion.relative.x * sens
-	_pitch = clampf(_pitch - motion.relative.y * sens, deg_to_rad(-80), deg_to_rad(70))
+	pitch = clampf(pitch - motion.relative.y * sens, deg_to_rad(-80), deg_to_rad(70))
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not _is_local:
+		return
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 
 	if event is InputEventMouseMotion:
@@ -200,8 +272,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Clicking the pause screen (outside its buttons) resumes without firing a shot.
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_fire_locked = true
-	elif not captured:
-		return  # Paused: ignore gameplay keys.
+	elif not captured or not alive:
+		return  # Paused or dead: ignore gameplay keys.
 	elif event.is_action_pressed("crouch"):
 		_try_stance(Stance.STAND if stance == Stance.CROUCH else Stance.CROUCH)
 	elif event.is_action_pressed("prone"):
@@ -215,30 +287,31 @@ func _unhandled_input(event: InputEvent) -> void:
 # --- Every physics frame -----------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	if not _is_local:
+		_update_remote_visuals(delta)
+		return
+
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	var input := Vector2.ZERO
-	if captured:
+	if captured and alive:
 		input = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	aiming = captured and Input.is_action_pressed("aim")
+	aiming = captured and alive and Input.is_action_pressed("aim")
 
 	var sprinting := (
 		Input.is_action_pressed("sprint") and stance == Stance.STAND
-		and not aiming and input.y < 0.0
+		and not aiming and input.y < 0.0 and _reload_left <= 0.0
 	)
-	if sprinting and _reload_left > 0.0:
-		sprinting = false
-
 	var speed: float = SPRINT_SPEED if sprinting else STANCE_SPEED[stance]
 	if aiming:
 		speed *= AIM_MOVE_MULT
 
-	if not is_on_floor():
-		velocity.y -= _gravity * delta
-
-	var target := transform.basis * Vector3(input.x, 0.0, input.y) * speed
-	velocity.x = move_toward(velocity.x, target.x, ACCEL * delta)
-	velocity.z = move_toward(velocity.z, target.z, ACCEL * delta)
-	move_and_slide()
+	if alive:  # Dead bodies have no collision, so they must not fall.
+		if not is_on_floor():
+			velocity.y -= _gravity * delta
+		var target := transform.basis * Vector3(input.x, 0.0, input.y) * speed
+		velocity.x = move_toward(velocity.x, target.x, ACCEL * delta)
+		velocity.z = move_toward(velocity.z, target.z, ACCEL * delta)
+		move_and_slide()
 
 	_update_camera(delta)
 	_update_weapon(delta, sprinting, captured)
@@ -249,10 +322,21 @@ func _update_camera(delta: float) -> void:
 	var eye: float = STANCE_EYE[stance]
 	_pivot.position.y = lerpf(_pivot.position.y, eye, k)
 	_recoil = move_toward(_recoil, 0.0, RECOIL_RECOVERY * delta)
-	_pivot.rotation.x = clampf(_pitch + _recoil, deg_to_rad(-80), deg_to_rad(70))
+	_pivot.rotation.x = clampf(pitch + _recoil, deg_to_rad(-80), deg_to_rad(70))
 	_arm.spring_length = lerpf(_arm.spring_length, AIM_ARM_LENGTH if aiming else ARM_LENGTH, k)
 	_arm.position.x = lerpf(_arm.position.x, SHOULDER * _shoulder_side, k)
 	_camera.fov = lerpf(_camera.fov, AIM_FOV if aiming else FOV, k)
+
+
+## Other players: their position arrives from the network; we just pose the gun and name tag.
+func _update_remote_visuals(delta: float) -> void:
+	var k := 1.0 - exp(-CAMERA_SMOOTH * delta)
+	var eye: float = STANCE_EYE[stance]
+	_pivot.position.y = lerpf(_pivot.position.y, eye, k)
+	_pivot.rotation.x = pitch
+	_name_tag.text = display_name
+	_name_tag.position.y = float(STANCE_HEIGHT[stance]) + 0.35
+	_name_tag.visible = alive
 
 
 func _update_weapon(delta: float, sprinting: bool, captured: bool) -> void:
@@ -280,7 +364,7 @@ func _update_weapon(delta: float, sprinting: bool, captured: bool) -> void:
 	if not trigger:
 		_fire_locked = false
 	var can_fire := (
-		captured and trigger and not _fire_locked and not sprinting
+		captured and alive and trigger and not _fire_locked and not sprinting
 		and _reload_left <= 0.0 and _fire_cooldown <= 0.0
 	)
 	if can_fire:
@@ -291,7 +375,7 @@ func _update_weapon(delta: float, sprinting: bool, captured: bool) -> void:
 
 	_hud.update_state(
 		_spread_to_pixels(total_spread), _ammo, _reserve,
-		STANCE_NAMES[stance], _reload_left > 0.0, sprinting
+		STANCE_NAMES[stance], _reload_left > 0.0, sprinting or not alive, health
 	)
 
 
@@ -302,11 +386,10 @@ func _try_stance(new_stance: Stance) -> void:
 	var current_height: float = STANCE_HEIGHT[stance]
 	if new_height > current_height and not _can_fit(new_height):
 		return  # Something is above us; we can't stand up here.
-	_apply_stance(new_stance)
-
-
-func _apply_stance(new_stance: Stance) -> void:
 	stance = new_stance
+
+
+func _apply_stance_shape() -> void:
 	var height: float = STANCE_HEIGHT[stance]
 	_capsule.height = height
 	_collision.position.y = height * 0.5
@@ -326,43 +409,94 @@ func _can_fit(height: float) -> bool:
 	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
 
 
-# --- Shooting --------------------------------------------------------------------
+# --- Shooting ----------------------------------------------------------------------
 
+## Runs on the shooter's computer: works out where the crosshair points (with spread)
+## and asks the host to fire the bullet.
 func _shoot(spread_deg: float) -> void:
 	_ammo -= 1
 	_fire_cooldown = FIRE_INTERVAL
 	_bloom = minf(_bloom + SHOT_BLOOM, MAX_SPREAD)
 
-	# Bullets travel from the camera through the crosshair, randomly within the spread cone.
 	var cam_basis := _camera.global_basis
 	var forward := -cam_basis.z
 	var dir := _random_direction_in_cone(forward, cam_basis, spread_deg)
 	var cam_pos := _camera.global_position
 	# Start the ray level with the player so we never hit things behind us.
 	var start_dist := maxf((_pivot.global_position - cam_pos).dot(forward), 0.0)
-	var from := cam_pos + dir * start_dist
-	var to := from + dir * RANGE
-
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.exclude = [get_rid()]
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-
-	var end_point := to
-	if not hit.is_empty():
-		end_point = hit["position"]
-		var collider: Object = hit["collider"]
-		if collider.has_method("take_hit"):
-			var killed: bool = collider.take_hit(DAMAGE, end_point)
-			_hud.show_hit_marker(killed)
-		else:
-			_spawn_impact(end_point, hit["normal"])
-
-	_spawn_tracer(_muzzle.global_position, end_point)
-	_muzzle_flash()
+	_server_fire.rpc_id(1, cam_pos + dir * start_dist, dir)
 
 	# Recoil kicks the view up (then settles back) and slightly sideways.
 	_recoil = minf(_recoil + RECOIL_PITCH * randf_range(0.7, 1.2), RECOIL_MAX)
 	rotation.y += randf_range(-1.0, 1.0) * RECOIL_YAW
+
+
+## Runs on the host: traces the bullet, applies damage, and tells everyone to draw it.
+@rpc("any_peer", "call_local", "reliable")
+func _server_fire(from: Vector3, dir: Vector3) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = multiplayer.get_unique_id()
+	if sender != get_multiplayer_authority() or not alive:
+		return  # Only a living player's own computer may fire their gun.
+	if from.distance_to(_pivot.global_position) > 6.0:
+		return  # Shot claims to start far from the player; ignore it.
+	dir = dir.normalized()
+	var space := get_world_3d().direct_space_state
+
+	# 1) What is under the crosshair?
+	var aim := _raycast(space, from, from + dir * RANGE)
+	var aim_point: Vector3 = from + dir * RANGE
+	if not aim.is_empty():
+		aim_point = aim["position"]
+
+	# 2) Can the gun actually reach that point from the shoulder?
+	#    This stops you shooting through cover your camera can see over but your gun can't.
+	var shoulder := _shoulder_point()
+	var to := aim_point + (aim_point - shoulder).normalized() * 0.1
+	var hit := _raycast(space, shoulder, to)
+
+	var end_point := to
+	var normal := Vector3.ZERO
+	if not hit.is_empty():
+		end_point = hit["position"]
+		var target: Object = hit["collider"]
+		if target.has_method("take_hit"):
+			var killed: bool = target.take_hit(DAMAGE, end_point, get_multiplayer_authority())
+			_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
+		else:
+			normal = hit["normal"]
+	_show_shot.rpc(end_point, normal)
+
+
+func _raycast(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vector3) -> Dictionary:
+	var query := PhysicsRayQueryParameters3D.create(from, to)
+	query.exclude = [get_rid()]
+	return space.intersect_ray(query)
+
+
+func _shoulder_point() -> Vector3:
+	return _pivot.global_position + global_basis * Vector3(SHOULDER_OFFSET.x, SHOULDER_OFFSET.y, 0)
+
+
+## Runs on everyone: draws the tracer, muzzle flash and bullet hole.
+@rpc("any_peer", "call_local", "reliable")
+func _show_shot(end_point: Vector3, impact_normal: Vector3) -> void:
+	if not _from_host():
+		return
+	_spawn_tracer(_muzzle.global_position, end_point)
+	_muzzle_flash()
+	if impact_normal != Vector3.ZERO:
+		_spawn_impact(end_point, impact_normal)
+
+
+## Runs on the shooter: shows the hit marker.
+@rpc("any_peer", "call_local", "reliable")
+func _hit_confirmed(killed: bool) -> void:
+	if _from_host() and _hud:
+		_hud.show_hit_marker(killed)
 
 
 func _random_direction_in_cone(forward: Vector3, basis: Basis, half_angle_deg: float) -> Vector3:
@@ -389,6 +523,83 @@ func _finish_reload() -> void:
 	var taken := mini(MAG_SIZE - _ammo, _reserve)
 	_ammo += taken
 	_reserve -= taken
+
+
+# --- Health, death and respawn (decided by the host) --------------------------------
+
+## Called on the host when a bullet hits this player. Returns true if it killed them.
+func take_hit(damage: float, hit_point: Vector3, attacker_id: int = 0) -> bool:
+	if not multiplayer.is_server() or not alive:
+		return false
+	var height: float = STANCE_HEIGHT[stance]
+	var headshot := stance != Stance.PRONE and hit_point.y - global_position.y > height - HEAD_SIZE
+	health = maxf(health - damage * (HEADSHOT_MULT if headshot else 1.0), 0.0)
+	_set_health.rpc(health)
+	if health > 0.0:
+		return false
+	_die.rpc(attacker_id)
+	_respawn_later()
+	return true
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _set_health(value: float) -> void:
+	if not _from_host():
+		return
+	if value < health and _hud:
+		_hud.show_damage()
+	health = value
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _die(killer_id: int) -> void:
+	if not _from_host():
+		return
+	alive = false
+	_collision.set_deferred("disabled", true)
+	create_tween().tween_property(_body_mesh, "rotation:x", deg_to_rad(-90), 0.4)
+	var killer_name := _name_of(killer_id)
+	Network.message.emit("%s killed %s" % [killer_name, display_name])
+	if _hud:
+		_hud.show_death(killer_name, RESPAWN_TIME)
+		_reload_left = 0.0
+
+
+func _respawn_later() -> void:
+	await get_tree().create_timer(RESPAWN_TIME).timeout
+	if not is_inside_tree():
+		return  # The player left while dead.
+	var spawn_point: Vector3 = get_tree().current_scene.call("pick_spawn_point")
+	_respawn.rpc(spawn_point)
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _respawn(spawn_point: Vector3) -> void:
+	if not _from_host():
+		return
+	alive = true
+	health = MAX_HEALTH
+	_collision.set_deferred("disabled", false)
+	_body_mesh.rotation.x = 0.0
+	if _is_local:
+		global_position = spawn_point
+		velocity = Vector3.ZERO
+		stance = Stance.STAND
+		_ammo = MAG_SIZE
+		_reserve = START_RESERVE
+		_recoil = 0.0
+		_hud.hide_death()
+
+
+func _from_host() -> bool:
+	return multiplayer.get_remote_sender_id() in [0, 1]
+
+
+func _name_of(peer_id: int) -> String:
+	var other := get_parent().get_node_or_null(str(peer_id))
+	if other and other.get("display_name") != null:
+		return other.get("display_name")
+	return "Someone"
 
 
 # --- Effects ----------------------------------------------------------------------

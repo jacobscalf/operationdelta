@@ -15,10 +15,16 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
   automated checks (`--headless`, or `--script` test scripts that save screenshots).
 
 ## Layout
-- `scenes/main.tscn` – entry scene; `scripts/main.gd` builds the gray-box map "Range 01".
-- `scripts/player.gd` – movement, stances (stand/crouch/prone), camera, hitscan rifle, spread.
-- `scripts/hud.gd` – crosshair (gap = spread cone), ammo, stance, hit markers.
-- `scripts/target_dummy.gd` – practice targets (`take_hit(damage, point) -> bool killed`).
+- `scenes/menu.tscn` + `scripts/menu.gd` – entry scene: name, Practice / Host / Join.
+  Test shortcuts: launch with `-- --host` or `-- --join=127.0.0.1`.
+- `scenes/main.tscn` + `scripts/main.gd` – the match: builds map "Range 01", opens the
+  connection, spawns players via a MultiplayerSpawner (custom spawn_function), spawn points.
+- `scripts/network.gd` – autoload `Network`: mode, name, ENet host/join on port 7777, leave().
+- `scripts/player.gd` – one per player on every machine. Owner has authority over
+  movement/aim/stance (MultiplayerSynchronizer); host decides hits (`_server_fire` traces
+  camera ray then shoulder ray), health, death, respawn via RPCs.
+- `scripts/hud.gd` – crosshair, ammo, health, kill feed, death screen, pause menu.
+- `scripts/target_dummy.gd` – practice-only targets (`take_hit(damage, point, attacker_id)`).
 - `scripts/input_setup.gd` – autoload that registers all input actions in code.
 
 ## Roadmap
@@ -27,7 +33,3 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
 3. Rounds: two teams, one life per round, timer (Suppression)
 4. Real art, sound, lighting polish (licensed assets only)
 5. Internet play: dedicated server, server browser, voice chat
-
-## Known TODO
-- Bullets trace from the camera; they should also check the muzzle line so cover in front
-  of the gun blocks shots.

@@ -1,5 +1,6 @@
 extends Node3D
-## Builds the gray-box test map "Range 01", its lighting, and spawns the player and targets.
+## The match: builds the gray-box map "Range 01" and its lighting, opens the network
+## connection, and spawns a soldier for every player who joins.
 ## All geometry here is placeholder blocks; real art replaces it in a later milestone.
 
 const PlayerScript := preload("res://scripts/player.gd")
@@ -10,21 +11,95 @@ const CONCRETE := Color(0.6, 0.59, 0.56)
 const WALL := Color(0.72, 0.63, 0.5)
 const WOOD := Color(0.5, 0.38, 0.25)
 
-const PLAYER_SPAWN := Vector3(0, 0.1, 55)
+## Places players can appear. The host picks the one farthest from everyone else.
+const SPAWN_POINTS: Array[Vector3] = [
+	Vector3(0, 0.1, 55), Vector3(0, 0.1, -55),
+	Vector3(-12, 0.1, 52), Vector3(12, 0.1, -62),
+	Vector3(12, 0.1, 52), Vector3(-25, 0.1, -58),
+	Vector3(-25, 0.1, 58), Vector3(25, 0.1, -58),
+	Vector3(25, 0.1, 58), Vector3(-50, 0.1, 10), Vector3(50, 0.1, 10),
+]
 
 var _checker: ImageTexture
 var _materials := {}
+var _players := Node3D.new()
+var _spawner := MultiplayerSpawner.new()
 
 
 func _ready() -> void:
 	_checker = _make_checker_texture()
 	_build_lighting()
 	_build_map()
-	_spawn_targets()
+	if Network.mode == Network.Mode.PRACTICE:
+		_spawn_targets()
 
+	# Every computer builds these with the same names, so the spawner can match them up.
+	_players.name = "Players"
+	add_child(_players)
+	_spawner.name = "PlayerSpawner"
+	_spawner.spawn_function = _create_player
+	add_child(_spawner)
+	_spawner.spawn_path = _spawner.get_path_to(_players)
+
+	var error_text := Network.open_connection()
+	if error_text != "":
+		Network.leave(error_text)
+		return
+
+	multiplayer.connection_failed.connect(
+		func() -> void: Network.leave("Couldn't reach a host at %s." % Network.join_address))
+	multiplayer.server_disconnected.connect(
+		func() -> void: Network.leave("The host left the game."))
+
+	if multiplayer.is_server():
+		multiplayer.peer_connected.connect(_add_player)
+		multiplayer.peer_disconnected.connect(_remove_player)
+		_add_player(1)  # the host's own soldier
+
+
+# --- Players (the host decides who exists; the spawner copies that to everyone) -----
+
+func _add_player(peer_id: int) -> void:
+	_spawner.spawn({ "id": peer_id, "position": pick_spawn_point() })
+	if peer_id != 1:
+		# Wait a moment so the new player's name has arrived before announcing it.
+		await get_tree().create_timer(1.0).timeout
+		var player := _players.get_node_or_null(str(peer_id))
+		if player:
+			Network.announce.rpc("%s joined" % player.get("display_name"))
+
+
+func _remove_player(peer_id: int) -> void:
+	var player := _players.get_node_or_null(str(peer_id))
+	if player:
+		Network.announce.rpc("%s left" % player.get("display_name"))
+		player.queue_free()
+
+
+## Runs on every computer when the host spawns a player.
+func _create_player(data: Variant) -> Node:
+	var info: Dictionary = data
+	var peer_id: int = info["id"]
 	var player: CharacterBody3D = PlayerScript.new()
-	player.position = PLAYER_SPAWN
-	add_child(player)
+	player.name = str(peer_id)
+	player.position = info["position"]
+	player.set_multiplayer_authority(peer_id)
+	return player
+
+
+## The spawn point farthest from every living player.
+func pick_spawn_point() -> Vector3:
+	var best := SPAWN_POINTS[0]
+	var best_distance := -1.0
+	for point in SPAWN_POINTS:
+		var nearest := INF
+		for player in _players.get_children():
+			if player.get("alive"):
+				nearest = minf(nearest, point.distance_to((player as Node3D).global_position))
+		if nearest > best_distance:
+			best_distance = nearest
+			best = point
+	return best
 
 
 # --- Lighting -------------------------------------------------------------------
