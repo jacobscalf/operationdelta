@@ -8,6 +8,10 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
 - The developer is a beginner working solo with Claude; Claude writes the code and explains
   steps plainly. Prefer building nodes in code / plain-text scenes so Claude can edit everything.
 
+## Version control
+- GitHub: https://github.com/jacobscalf/operationdelta (private). Commit each finished
+  feature and `git push` right after, so GitHub always has the latest working version.
+
 ## Running the game
 - The developer plays by double-clicking `Play Operation Delta.bat`.
 - Do NOT launch the game for the developer from Claude (Start-Process etc.): Windows denies the
