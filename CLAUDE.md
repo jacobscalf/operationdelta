@@ -40,6 +40,10 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
   kill feed, death screen, pause menu.
 - `scripts/target_dummy.gd` – practice-only targets (`take_hit(damage, point, attacker_id)`).
 - `scripts/input_setup.gd` – autoload that registers all input actions in code.
+- `scripts/sfx.gd` – autoload `Sfx`: `play_3d(name, pos, db, unit_size)` / `play_ui(name, db)`.
+  Sounds live in `assets/audio/` (all CC0, see `assets/audio/CREDITS.md`). Ops fire M4
+  sounds, Terrorists AK; far shots (>45 m) use the distant recordings. Footsteps come from
+  each soldier's actual movement (quieter crouched/prone).
 
 ## Roadmap
 1. ✅ Core feel (single player, gray box)

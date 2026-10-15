@@ -54,7 +54,9 @@ func _ready() -> void:
 	_ready_button.custom_minimum_size = Vector2(320, 60)
 	_ready_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_ready_button.add_theme_font_size_override("font_size", 26)
-	_ready_button.pressed.connect(func() -> void: _match.request_green_up.rpc_id(1, not _my_ready))
+	_ready_button.pressed.connect(func() -> void:
+		Sfx.play_ui("click" if _my_ready else "green_up", -4.0)
+		_match.request_green_up.rpc_id(1, not _my_ready))
 	box.add_child(_ready_button)
 
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -90,7 +92,9 @@ func _build_team_column(team: int) -> Control:
 
 	var join := _join_buttons[team]
 	join.custom_minimum_size = Vector2(0, 44)
-	join.pressed.connect(func() -> void: _match.request_team.rpc_id(1, team))
+	join.pressed.connect(func() -> void:
+		Sfx.play_ui("click", -4.0)
+		_match.request_team.rpc_id(1, team))
 	column.add_child(join)
 	return panel
 

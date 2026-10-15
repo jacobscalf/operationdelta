@@ -66,6 +66,14 @@ const SPREAD_SETTLE := 3.0  # how fast the crosshair tightens (higher = faster)
 const MAX_SPREAD := 4.0
 const MAX_IMPACTS := 64
 
+# --- Sound -------------------------------------------------------------------
+const FAR_GUNSHOT_DISTANCE := 45.0  # beyond this, other players' guns use the distant recording
+## Meters walked per footstep, and how loud steps are, for each stance.
+const STEP_LENGTH := { Stance.STAND: 1.7, Stance.CROUCH: 1.1, Stance.PRONE: 0.9 }
+const STEP_VOLUME_DB := { Stance.STAND: -4.0, Stance.CROUCH: -14.0, Stance.PRONE: -20.0 }
+const SPRINT_STEP_LENGTH := 2.2
+const SPRINT_STEP_BOOST_DB := 3.0
+
 # --- Health ------------------------------------------------------------------
 const MAX_HEALTH := 100.0
 const HEAD_SIZE := 0.3  # top 30 cm of the body counts as the head
@@ -115,6 +123,8 @@ var _fire_locked := false
 var _spread := 2.0
 var _bloom := 0.0
 var _impacts: Array[Node3D] = []
+var _last_step_check := Vector3.ZERO
+var _step_distance := 0.0
 
 var _collision: CollisionShape3D
 var _capsule: CapsuleShape3D
@@ -343,6 +353,7 @@ func _physics_process(delta: float) -> void:
 		speed *= AIM_MOVE_MULT
 
 	_move(delta, input, speed, can_act and Input.is_action_just_pressed("jump"))
+	_update_footsteps()
 	_update_camera(delta)
 	_update_weapon(delta, sprinting, can_act)
 
@@ -392,8 +403,27 @@ func _update_camera(delta: float) -> void:
 	_camera.fov = lerpf(_camera.fov, AIM_FOV if aiming else FOV, k)
 
 
+## Footsteps for every soldier, worked out from how far they actually moved, so it works
+## the same for you, other players and bots. Crouching and going prone are much quieter.
+func _update_footsteps() -> void:
+	var flat := Vector2(global_position.x - _last_step_check.x, global_position.z - _last_step_check.z)
+	var moved := flat.length()
+	var airborne := absf(global_position.y - _last_step_check.y) > 0.05
+	_last_step_check = global_position
+	if not alive or airborne or moved > 1.0:  # (a big jump means a teleport, e.g. respawn)
+		return
+	var sprinting := moved / get_physics_process_delta_time() > STANCE_SPEED[Stance.STAND] + 0.5
+	var step_length: float = SPRINT_STEP_LENGTH if sprinting else STEP_LENGTH[stance]
+	_step_distance += moved
+	if _step_distance >= step_length:
+		_step_distance = 0.0
+		var volume: float = STEP_VOLUME_DB[stance] + (SPRINT_STEP_BOOST_DB if sprinting else 0.0)
+		Sfx.play_3d("step", global_position, volume, 2.5)
+
+
 ## Other players: their position arrives from the network; we just pose the gun and name tag.
 func _update_remote_visuals(delta: float) -> void:
+	_update_footsteps()
 	var k := 1.0 - exp(-CAMERA_SMOOTH * delta)
 	var eye: float = STANCE_EYE[stance]
 	_pivot.position.y = lerpf(_pivot.position.y, eye, k)
@@ -437,6 +467,7 @@ func _update_weapon(delta: float, sprinting: bool, can_act: bool) -> void:
 		if _ammo > 0:
 			_shoot(total_spread)
 		else:
+			_fire_cooldown = 0.3  # don't retry every frame while the trigger is held
 			_start_reload()
 
 	_hud.update_state(
@@ -545,17 +576,19 @@ func fire_bullet(from: Vector3, dir: Vector3) -> void:
 
 	var end_point := to
 	var normal := Vector3.ZERO
+	var hit_body := false
 	if not hit.is_empty():
 		end_point = hit["position"]
 		var target: Object = hit["collider"]
 		if target.has_method("take_hit"):
+			hit_body = true
 			if _can_damage(target):
 				var killed: bool = target.take_hit(DAMAGE, end_point, peer_id())
 				if not is_bot:
 					_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
 		else:
 			normal = hit["normal"]
-	_show_shot.rpc(end_point, normal)
+	_show_shot.rpc(end_point, normal, hit_body)
 
 
 ## Teammates can only be hurt when the host turned friendly fire on.
@@ -574,23 +607,43 @@ func _shoulder_point() -> Vector3:
 	return _pivot.global_position + global_basis * Vector3(SHOULDER_OFFSET.x, SHOULDER_OFFSET.y, 0)
 
 
-## Runs on everyone: draws the tracer, muzzle flash and bullet hole.
+## Runs on everyone: draws the tracer, muzzle flash and bullet hole, and plays the sounds.
 @rpc("any_peer", "call_local", "reliable")
-func _show_shot(end_point: Vector3, impact_normal: Vector3) -> void:
+func _show_shot(end_point: Vector3, impact_normal: Vector3, hit_body: bool) -> void:
 	if not _from_host():
 		return
 	last_shot_msec = Time.get_ticks_msec()
 	_spawn_tracer(_muzzle.global_position, end_point)
 	_muzzle_flash()
+	_play_gunshot()
 	if impact_normal != Vector3.ZERO:
 		_spawn_impact(end_point, impact_normal)
+		Sfx.play_3d("impact_ground", end_point, -6.0, 3.0)
+	elif hit_body:
+		Sfx.play_3d("impact_body", end_point, 0.0, 4.0)
 
 
-## Runs on the shooter: shows the hit marker.
+## Ops carry M4s, Terrorists AKs. Your own gun plays flat and loud; other guns come from
+## where they are, and far-away guns use the distant recording with its echo.
+func _play_gunshot() -> void:
+	var gun_name := "m4" if team == MatchScript.TEAM_OPS else "ak"
+	if _is_local:
+		Sfx.play_ui(gun_name + "_near", -4.0, true)
+		return
+	var listener := get_viewport().get_camera_3d()
+	var distance := listener.global_position.distance_to(_muzzle.global_position) if listener else 0.0
+	if distance > FAR_GUNSHOT_DISTANCE:
+		Sfx.play_3d(gun_name + "_far", _muzzle.global_position, 6.0, 40.0)
+	else:
+		Sfx.play_3d(gun_name + "_near", _muzzle.global_position, 0.0, 15.0)
+
+
+## Runs on the shooter: shows the hit marker and plays a tick (or a chime for a kill).
 @rpc("any_peer", "call_local", "reliable")
 func _hit_confirmed(killed: bool) -> void:
 	if _from_host() and _hud:
 		_hud.show_hit_marker(killed)
+		Sfx.play_ui("kill" if killed else "hit", -6.0 if killed else -10.0)
 
 
 func _random_direction_in_cone(forward: Vector3, basis: Basis, half_angle_deg: float) -> Vector3:
@@ -607,9 +660,21 @@ func _spread_to_pixels(spread_deg: float) -> float:
 
 
 func _start_reload() -> void:
-	if _reload_left > 0.0 or _ammo == MAG_SIZE or _reserve == 0:
+	if _reload_left > 0.0 or _ammo == MAG_SIZE:
+		return
+	if _reserve == 0:
+		Sfx.play_ui("dry_fire", -6.0)  # out of ammo entirely
 		return
 	_reload_left = RELOAD_TIME
+	_play_reload_sounds()
+
+
+## Mag out, mag in, then the charging handle, timed across the reload.
+func _play_reload_sounds() -> void:
+	for step: Array in [[0.2, "mag_out"], [1.2, "mag_in"], [1.8, "charge"]]:
+		get_tree().create_timer(step[0]).timeout.connect(func() -> void:
+			if _reload_left > 0.0:  # skip if the reload was cut short (e.g. we died)
+				Sfx.play_ui(step[1], -8.0, true))
 
 
 func _finish_reload() -> void:
@@ -642,6 +707,7 @@ func _set_health(value: float) -> void:
 		return
 	if value < health and _hud:
 		_hud.show_damage()
+		Sfx.play_ui("hurt", -4.0, true)
 	health = value
 
 

@@ -20,6 +20,8 @@ var _pause_screen := Control.new()
 var _lobby_panel: LobbyPanelScript
 var _match: MatchScript
 var _was_in_lobby := false
+var _last_scores := [0, 0]
+var _last_tick := -1
 var _spread_px := 10.0
 var _ammo := 0
 var _reserve := 0
@@ -49,6 +51,8 @@ func _ready() -> void:
 	_lobby_panel.visible = false
 	add_child(_lobby_panel)
 	Network.message.connect(_add_feed_line)
+	_match.changed.connect(_on_match_changed)
+	_last_scores = _match.scores.duplicate()
 
 	match Network.mode:
 		Network.Mode.PRACTICE:
@@ -79,6 +83,32 @@ func _process(delta: float) -> void:
 	_lobby_panel.visible = in_lobby
 	_pause_screen.visible = not in_lobby and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 	_canvas.queue_redraw()
+
+	# Countdown ticks for the last few seconds before the match and each round start.
+	if _match.state in [MatchScript.State.STARTING, MatchScript.State.COUNTDOWN]:
+		var seconds := ceili(_match.time_left)
+		if seconds != _last_tick and seconds <= 3 and seconds > 0:
+			Sfx.play_ui("tick", -6.0)
+		_last_tick = seconds
+	else:
+		_last_tick = -1
+
+
+## Round sounds: a bong when a round is about to start, a cue when it goes live,
+## and a win or lose sting when it ends.
+func _on_match_changed() -> void:
+	var my_team: int = get_parent().get("team")
+	match _match.state:
+		MatchScript.State.COUNTDOWN:
+			Sfx.play_ui("round_start", -4.0)
+		MatchScript.State.LIVE:
+			Sfx.play_ui("go", -4.0)
+		MatchScript.State.ROUND_OVER:
+			if _match.scores[my_team] > _last_scores[my_team]:
+				Sfx.play_ui("round_won", -2.0)
+			elif _match.scores[1 - my_team] > _last_scores[1 - my_team]:
+				Sfx.play_ui("round_lost", -2.0)
+	_last_scores = _match.scores.duplicate()
 
 
 # --- Called by the player script ---------------------------------------------------
