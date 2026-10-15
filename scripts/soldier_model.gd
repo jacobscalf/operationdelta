@@ -19,7 +19,25 @@ const PRONE_SPEED_UNIT := 1.2
 const UPPER_BODY := ["Spine", "Neck", "Head", "Shoulder", "Arm", "Hand"]
 const BLEND_SMOOTH := 10.0
 
+## Physics layer (value) for hit zones. Bullets look for these; nothing walks into them.
+const HITBOX_LAYER := 4
+## Hit zones: bone, its child bone (sets the length), radius, zone name.
+const HITBOXES := [
+	["mixamorig_Hips", "mixamorig_Spine1", 0.17, "body"],
+	["mixamorig_Spine1", "mixamorig_Neck", 0.18, "body"],
+	["mixamorig_LeftArm", "mixamorig_LeftForeArm", 0.065, "limb"],
+	["mixamorig_LeftForeArm", "mixamorig_LeftHand", 0.055, "limb"],
+	["mixamorig_RightArm", "mixamorig_RightForeArm", 0.065, "limb"],
+	["mixamorig_RightForeArm", "mixamorig_RightHand", 0.055, "limb"],
+	["mixamorig_LeftUpLeg", "mixamorig_LeftLeg", 0.09, "limb"],
+	["mixamorig_LeftLeg", "mixamorig_LeftFoot", 0.07, "limb"],
+	["mixamorig_RightUpLeg", "mixamorig_RightLeg", 0.09, "limb"],
+	["mixamorig_RightLeg", "mixamorig_RightFoot", 0.07, "limb"],
+]
+const HEAD_RADIUS := 0.13
+
 var _model: Node3D
+var _hitboxes: Array[Area3D] = []
 var _tree: AnimationTree
 var _aim: AimModifierScript
 var _gun: MeshInstance3D
@@ -30,10 +48,13 @@ var _last_stance := -1
 var _airborne := false
 
 
-## team: 0 = Ops, 1 = Terrorists.
-func setup(team: int) -> void:
+## team: 0 = Ops, 1 = Terrorists. hit_owner: the player that bullets hitting this body damage.
+func setup(team: int, hit_owner: Node) -> void:
 	if _model:
 		_model.queue_free()
+	if _gun:
+		_gun.queue_free()
+	_hitboxes.clear()
 	_model = MODELS[team].instantiate()
 	_model.rotation.y = PI  # Mixamo characters face +Z; Godot's forward is -Z
 	add_child(_model)
@@ -46,8 +67,79 @@ func setup(team: int) -> void:
 	_aim.gun = _gun
 	skeleton.add_child(_aim)
 	_build_tree(skeleton)
+	_build_hitboxes(skeleton, hit_owner)
 	_last_stance = -1
 	_dead = false
+
+
+## The physics ids of this soldier's hit zones (so a soldier's own shots can skip them).
+func hitbox_rids() -> Array[RID]:
+	var rids: Array[RID] = []
+	for area in _hitboxes:
+		rids.append(area.get_rid())
+	return rids
+
+
+func set_hitboxes_enabled(enabled: bool) -> void:
+	for area in _hitboxes:
+		area.set_deferred("collision_layer", HITBOX_LAYER if enabled else 0)
+
+
+## Invisible shapes riding on the skeleton's bones, so hits land where the body really is,
+## whatever pose the animation has it in. Each remembers its owner and which zone it is.
+func _build_hitboxes(skeleton: Skeleton3D, hit_owner: Node) -> void:
+	for spec: Array in HITBOXES:
+		var bone := skeleton.find_bone(spec[0])
+		var end_bone := skeleton.find_bone(spec[1])
+		if bone < 0 or end_bone < 0:
+			continue
+		# Length from this bone to the end bone, measured on the rest pose.
+		var start := skeleton.get_bone_global_rest(bone).origin
+		var length := start.distance_to(skeleton.get_bone_global_rest(end_bone).origin)
+		var capsule := CapsuleShape3D.new()
+		capsule.radius = spec[2]
+		capsule.height = maxf(length + capsule.radius * 2.0, capsule.radius * 2.0)
+		# Mixamo bones point along their local +Y toward the next bone.
+		var to_end := skeleton.get_bone_global_rest(bone).basis.inverse() * \
+			(skeleton.get_bone_global_rest(end_bone).origin - start)
+		var shape_transform := Transform3D(_basis_along(to_end.normalized()), to_end * 0.5)
+		_add_hitbox(skeleton, spec[0], capsule, shape_transform, spec[3], hit_owner)
+
+	var head := skeleton.find_bone("mixamorig_Head")
+	if head >= 0:
+		var sphere := SphereShape3D.new()
+		sphere.radius = HEAD_RADIUS
+		_add_hitbox(skeleton, "mixamorig_Head", sphere, Transform3D(Basis(), Vector3(0, 0.09, 0.02)),
+			"head", hit_owner)
+
+
+func _add_hitbox(skeleton: Skeleton3D, bone_name: String, shape: Shape3D, shape_transform: Transform3D,
+		zone: String, hit_owner: Node) -> void:
+	var attachment := BoneAttachment3D.new()
+	attachment.bone_name = bone_name
+	skeleton.add_child(attachment)
+	var area := Area3D.new()
+	area.collision_layer = HITBOX_LAYER
+	area.collision_mask = 0
+	area.monitoring = false
+	area.set_meta("hit_owner", hit_owner)
+	area.set_meta("zone", zone)
+	attachment.add_child(area)
+	var collision := CollisionShape3D.new()
+	collision.shape = shape
+	collision.transform = shape_transform
+	area.add_child(collision)
+	_hitboxes.append(area)
+
+
+## A basis whose Y axis points along dir (capsules are tall along Y).
+func _basis_along(dir: Vector3) -> Basis:
+	var y := dir if dir.length() > 0.001 else Vector3.UP
+	var x := y.cross(Vector3.FORWARD)
+	if x.length() < 0.01:
+		x = y.cross(Vector3.RIGHT)
+	x = x.normalized()
+	return Basis(x, y, x.cross(y).normalized()).orthonormalized()
 
 
 ## Called every frame by the player.

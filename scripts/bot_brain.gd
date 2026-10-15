@@ -113,10 +113,17 @@ func _find_target() -> Node3D:
 
 func _can_see(other: Node3D) -> bool:
 	var from := _eye()
-	var query := PhysicsRayQueryParameters3D.create(from, other.global_position + Vector3(0, 1.0, 0))
-	query.exclude = [body.get_rid()]
+	# Look at their chest; seeing any part of their body (a hit zone) counts.
+	var query := PhysicsRayQueryParameters3D.create(from, other.global_position + Vector3(0, 1.0, 0), 1 | 4)
+	query.collide_with_areas = true
+	var exclude: Array[RID] = [body.get_rid()]
+	exclude.append_array(body.get("_model").hitbox_rids())
+	query.exclude = exclude
 	var hit := body.get_world_3d().direct_space_state.intersect_ray(query)
-	return not hit.is_empty() and hit["collider"] == other
+	if hit.is_empty():
+		return false
+	var seen: Object = hit["collider"]
+	return seen == other or (seen.has_meta("hit_owner") and seen.get_meta("hit_owner") == other)
 
 
 func _aim_at(point: Vector3, delta: float) -> void:

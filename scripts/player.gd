@@ -77,8 +77,13 @@ const SPRINT_STEP_BOOST_DB := 3.0
 
 # --- Health ------------------------------------------------------------------
 const MAX_HEALTH := 100.0
-const HEAD_SIZE := 0.3  # top 30 cm of the body counts as the head
-const HEADSHOT_MULT := 2.5  # 50 damage: 2 headshots to kill
+## Damage multiplier for each hit zone (see soldier_model.gd HITBOXES).
+const ZONE_DAMAGE_MULT := { "head": 2.5, "body": 1.0, "limb": 0.8 }  # 50 / 20 / 16
+
+## Physics layers (values): the level, player capsules, and the hit zones on bodies.
+const WORLD_LAYER := 1
+const PLAYER_LAYER := 2
+const HITBOX_LAYER := 4
 
 ## Uniform colors: Ops in olive drab, Terrorists in charcoal.
 const TEAM_BODY_COLORS := [Color(0.33, 0.37, 0.25), Color(0.2, 0.19, 0.18)]
@@ -201,6 +206,10 @@ func _build_body() -> void:
 	_collision = CollisionShape3D.new()
 	_collision.shape = _capsule
 	add_child(_collision)
+	# The capsule is only for walking into walls and other players; bullets use the
+	# hit zones on the animated body instead (see soldier_model.gd).
+	collision_layer = PLAYER_LAYER
+	collision_mask = WORLD_LAYER | PLAYER_LAYER
 
 	_body_material = StandardMaterial3D.new()
 	_body_material.albedo_color = TEAM_BODY_COLORS[0]
@@ -614,10 +623,14 @@ func fire_bullet(from: Vector3, dir: Vector3) -> void:
 	if not hit.is_empty():
 		end_point = hit["position"]
 		var target: Object = hit["collider"]
+		var zone := "body"
+		if target.has_meta("hit_owner"):  # a hit zone on someone's body
+			zone = target.get_meta("zone")
+			target = target.get_meta("hit_owner")
 		if target.has_method("take_hit"):
 			hit_body = true
 			if _can_damage(target):
-				var killed: bool = target.take_hit(DAMAGE, end_point, peer_id())
+				var killed: bool = target.take_hit(DAMAGE, end_point, peer_id(), zone)
 				if not is_bot:
 					_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
 		else:
@@ -631,9 +644,13 @@ func _can_damage(target: Object) -> bool:
 	return target_team == null or target_team != team or _match.friendly_fire
 
 
+## Bullets hit the level and body hit zones, never capsules, and never the shooter's own body.
 func _raycast(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vector3) -> Dictionary:
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.exclude = [get_rid()]
+	var query := PhysicsRayQueryParameters3D.create(from, to, WORLD_LAYER | HITBOX_LAYER)
+	query.collide_with_areas = true
+	var exclude: Array[RID] = [get_rid()]
+	exclude.append_array(_model.hitbox_rids())
+	query.exclude = exclude
 	return space.intersect_ray(query)
 
 
@@ -721,12 +738,10 @@ func _finish_reload() -> void:
 # --- Health, death and respawn (decided by the host) --------------------------------
 
 ## Called on the host when a bullet hits this player. Returns true if it killed them.
-func take_hit(damage: float, hit_point: Vector3, attacker_id: int = 0) -> bool:
+func take_hit(damage: float, _hit_point: Vector3, attacker_id: int = 0, zone: String = "body") -> bool:
 	if not multiplayer.is_server() or not alive:
 		return false
-	var height: float = STANCE_HEIGHT[stance]
-	var headshot := stance != Stance.PRONE and hit_point.y - global_position.y > height - HEAD_SIZE
-	health = maxf(health - damage * (HEADSHOT_MULT if headshot else 1.0), 0.0)
+	health = maxf(health - damage * float(ZONE_DAMAGE_MULT.get(zone, 1.0)), 0.0)
 	_set_health.rpc(health)
 	if health > 0.0:
 		return false
@@ -751,6 +766,7 @@ func _die(killer_id: int) -> void:
 		return
 	alive = false
 	_collision.set_deferred("disabled", true)
+	_model.set_hitboxes_enabled(false)
 	_model.play_death(stance)
 	var killer_name := _name_of(killer_id)
 	var killer := get_parent().get_node_or_null(str(killer_id))
@@ -804,7 +820,8 @@ func _apply_team_colors() -> void:
 	_name_tag.modulate = MatchScript.TEAM_COLORS[team]
 	if _model and _model_team != team:
 		_model_team = team
-		_model.setup(team)  # Ops wear the SWAT kit, Terrorists the hooded gas-mask outfit
+		_model.setup(team, self)  # Ops wear the SWAT kit, Terrorists the hooded gas-mask outfit
+		_model.set_hitboxes_enabled(alive)
 
 
 ## Host only: take this player off the field (going back to the lobby).
@@ -825,6 +842,7 @@ func _leave_field() -> void:
 ## Removes the body completely (for players sitting out a round they joined late).
 func _hide_body() -> void:
 	_collision.set_deferred("disabled", true)
+	_model.set_hitboxes_enabled(false)
 	_model.visible = false
 
 
@@ -835,6 +853,7 @@ func _respawn(spawn_point: Vector3) -> void:
 	alive = true
 	health = MAX_HEALTH
 	_collision.set_deferred("disabled", false)
+	_model.set_hitboxes_enabled(true)
 	_model.visible = true
 	_model.revive()
 	if is_multiplayer_authority():  # the computer that controls this soldier (bots: the host)

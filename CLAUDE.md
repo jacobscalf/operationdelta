@@ -44,6 +44,9 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
   Terrorists = Heraklios) + AnimationTree built in code (stand/crouch BlendSpace2D, prone
   BlendSpace1D, jump, upper-body reload OneShot, death transitions). Driven by
   `player._update_model()` from measured movement, so it works for remote players and bots.
+  Also builds bone-attached Area3D hit zones (physics layer value 4, meta `hit_owner` +
+  `zone` head/body/limb). Bullet rays mask world (1) + hit zones (4) with areas on;
+  player capsules are layer 2 (movement only). Zone damage: head 2.5x, body 1x, limb 0.8x.
 - `scripts/aim_modifier.gd` – SkeletonModifier3D: bends the spine with aim pitch and places
   the rifle from the right hand toward the left hand each frame.
 - `tools/build_characters.gd` – rebuilds `assets/characters/*.scn` + `soldier_anims.res`

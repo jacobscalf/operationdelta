@@ -1,10 +1,10 @@
 extends StaticBody3D
 ## Practice target. Takes damage, flashes when hit, falls over, then gets back up.
-## Headshots (above HEAD_HEIGHT) do 4x damage.
+## Headshots (above HEAD_HEIGHT) do 2.5x damage, same as on players.
 
 const MAX_HEALTH := 100.0
 const HEAD_HEIGHT := 1.5
-const HEADSHOT_MULT := 4.0
+const HEADSHOT_MULT := 2.5  # same as players
 const RESPAWN_TIME := 3.0
 const BASE_COLOR := Color(0.6, 0.18, 0.15)
 
@@ -52,7 +52,7 @@ func _physics_process(delta: float) -> void:
 
 
 ## Called by the player's bullets. Returns true if this hit killed the target.
-func take_hit(damage: float, hit_point: Vector3, _attacker_id: int = 0) -> bool:
+func take_hit(damage: float, hit_point: Vector3, _attacker_id: int = 0, _zone: String = "") -> bool:
 	if _dead:
 		return false
 	var is_headshot := hit_point.y - global_position.y > HEAD_HEIGHT
