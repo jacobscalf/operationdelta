@@ -148,6 +148,12 @@ func request_green_up(is_ready: bool) -> void:
 
 # --- Events the host reports ------------------------------------------------------------
 
+## Host only. Bots are always green.
+func mark_green(peer_id: int) -> void:
+	_ready_peers[peer_id] = true
+	_broadcast_lobby()
+
+
 ## Host only. Called by a player when they die.
 func on_player_killed(victim: Node) -> void:
 	if respawns_enabled():

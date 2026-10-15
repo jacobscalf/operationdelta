@@ -10,6 +10,7 @@ extends CharacterBody3D
 
 const HudScript := preload("res://scripts/hud.gd")
 const MatchScript := preload("res://scripts/match.gd")
+const BotBrainScript := preload("res://scripts/bot_brain.gd")
 
 enum Stance { STAND, CROUCH, PRONE }
 
@@ -80,6 +81,8 @@ const LAYER_DYNAMIC := 2
 var team := 0
 ## When this player last fired (milliseconds), so the mini map can briefly reveal enemies.
 var last_shot_msec := -100000
+## A computer-controlled soldier. Bots belong to the host, which runs their BotBrain.
+var is_bot := false
 
 # --- Synced to every computer by the MultiplayerSynchronizer (see _build_sync) ---
 var pitch := 0.0
@@ -95,7 +98,8 @@ var stance: Stance = Stance.STAND:
 var health := MAX_HEALTH
 var alive := true
 
-var _is_local := false
+var _is_local := false  # the soldier controlled by the person at this computer
+var _brain: BotBrainScript  # only on the host, only for bots
 var _match: MatchScript
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 var _recoil := 0.0  # extra upward view from firing; drifts back to zero
@@ -130,8 +134,12 @@ var _impact_material: StandardMaterial3D
 
 func _ready() -> void:
 	add_to_group("players")
-	_is_local = is_multiplayer_authority()
+	_is_local = is_multiplayer_authority() and not is_bot
 	_match = get_tree().current_scene.get_node("Match")
+	if is_bot and is_multiplayer_authority():
+		_brain = BotBrainScript.new()
+		_brain.body = self
+		add_child(_brain)
 	_build_body()
 	_build_camera()
 	_build_gun()
@@ -311,6 +319,9 @@ func _unhandled_input(event: InputEvent) -> void:
 # --- Every physics frame -----------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	if _brain:
+		_bot_physics(delta)
+		return
 	if not _is_local:
 		_update_remote_visuals(delta)
 		return
@@ -330,31 +341,44 @@ func _physics_process(delta: float) -> void:
 	var speed: float = SPRINT_SPEED if sprinting else STANCE_SPEED[stance]
 	if aiming:
 		speed *= AIM_MOVE_MULT
-	if _landing_slow > 0.0:
-		speed *= LANDING_SPEED_MULT
 
-	_jump_cooldown = maxf(_jump_cooldown - delta, 0.0)
-	_landing_slow = maxf(_landing_slow - delta, 0.0)
-
-	if alive:  # Dead bodies have no collision, so they must not fall.
-		var on_floor := is_on_floor()
-		if not on_floor:
-			velocity.y -= _gravity * delta
-		elif not _was_on_floor:
-			_landing_slow = LANDING_SLOW
-		_was_on_floor = on_floor
-
-		if can_act and on_floor and Input.is_action_just_pressed("jump"):
-			_try_jump()
-
-		var target := transform.basis * Vector3(input.x, 0.0, input.y) * speed
-		var accel := ACCEL if on_floor else AIR_ACCEL
-		velocity.x = move_toward(velocity.x, target.x, accel * delta)
-		velocity.z = move_toward(velocity.z, target.z, accel * delta)
-		move_and_slide()
-
+	_move(delta, input, speed, can_act and Input.is_action_just_pressed("jump"))
 	_update_camera(delta)
 	_update_weapon(delta, sprinting, can_act)
+
+
+## Bots (on the host): the brain picks a direction, where to look and when to shoot.
+func _bot_physics(delta: float) -> void:
+	_update_remote_visuals(delta)
+	var can_act := alive and _match.state in [MatchScript.State.LIVE, MatchScript.State.PRACTICE]
+	var input := _brain.think(delta) if can_act else Vector2.ZERO
+	_move(delta, input, STANCE_SPEED[stance], _brain.wants_jump)
+
+
+## Shared by players and bots: gravity, jumping, and walking in the input direction.
+func _move(delta: float, input: Vector2, speed: float, jump: bool) -> void:
+	_jump_cooldown = maxf(_jump_cooldown - delta, 0.0)
+	_landing_slow = maxf(_landing_slow - delta, 0.0)
+	if _landing_slow > 0.0:
+		speed *= LANDING_SPEED_MULT
+	if not alive:
+		return  # Dead bodies have no collision, so they must not fall.
+
+	var on_floor := is_on_floor()
+	if not on_floor:
+		velocity.y -= _gravity * delta
+	elif not _was_on_floor:
+		_landing_slow = LANDING_SLOW
+	_was_on_floor = on_floor
+
+	if jump and on_floor:
+		_try_jump()
+
+	var target := transform.basis * Vector3(input.x, 0.0, input.y) * speed
+	var accel := ACCEL if on_floor else AIR_ACCEL
+	velocity.x = move_toward(velocity.x, target.x, accel * delta)
+	velocity.z = move_toward(velocity.z, target.z, accel * delta)
+	move_and_slide()
 
 
 func _update_camera(delta: float) -> void:
@@ -484,7 +508,7 @@ func _shoot(spread_deg: float) -> void:
 	rotation.y += randf_range(-1.0, 1.0) * RECOIL_YAW
 
 
-## Runs on the host: traces the bullet, applies damage, and tells everyone to draw it.
+## Runs on the host when a player's computer asks to fire: checks the request is genuine.
 @rpc("any_peer", "call_local", "reliable")
 func _server_fire(from: Vector3, dir: Vector3) -> void:
 	if not multiplayer.is_server():
@@ -492,8 +516,16 @@ func _server_fire(from: Vector3, dir: Vector3) -> void:
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
 		sender = multiplayer.get_unique_id()
-	if sender != get_multiplayer_authority() or not alive:
-		return  # Only a living player's own computer may fire their gun.
+	if sender != get_multiplayer_authority() or is_bot:
+		return  # Only a player's own computer may fire their gun.
+	fire_bullet(from, dir)
+
+
+## Host only: traces the bullet, applies damage, and tells everyone to draw it.
+## Called for players via _server_fire, and directly by bot brains.
+func fire_bullet(from: Vector3, dir: Vector3) -> void:
+	if not alive:
+		return
 	if from.distance_to(_pivot.global_position) > 6.0:
 		return  # Shot claims to start far from the player; ignore it.
 	dir = dir.normalized()
@@ -518,8 +550,9 @@ func _server_fire(from: Vector3, dir: Vector3) -> void:
 		var target: Object = hit["collider"]
 		if target.has_method("take_hit"):
 			if _can_damage(target):
-				var killed: bool = target.take_hit(DAMAGE, end_point, get_multiplayer_authority())
-				_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
+				var killed: bool = target.take_hit(DAMAGE, end_point, peer_id())
+				if not is_bot:
+					_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
 		else:
 			normal = hit["normal"]
 	_show_shot.rpc(end_point, normal)
@@ -703,14 +736,20 @@ func _respawn(spawn_point: Vector3) -> void:
 	_body_mesh.rotation.x = 0.0
 	_body_mesh.visible = true
 	_gun.visible = true
-	if _is_local:
+	if is_multiplayer_authority():  # the computer that controls this soldier (bots: the host)
 		global_position = spawn_point
 		velocity = Vector3.ZERO
 		stance = Stance.STAND
 		_ammo = MAG_SIZE
 		_reserve = START_RESERVE
 		_recoil = 0.0
-		_hud.hide_death()
+		if _hud:
+			_hud.hide_death()
+
+
+## This player's id (the node's name). For people it's their network id; bots get their own.
+func peer_id() -> int:
+	return String(name).to_int()
 
 
 func _from_host() -> bool:

@@ -30,6 +30,14 @@ const MAP_SIZE := 140.0
 ## Visual layer for things that should NOT appear on the mini map (players, effects).
 const LAYER_DYNAMIC := 2
 
+## Bots: how long the host waits alone in the lobby before one joins, and their ids/names.
+const BOT_JOIN_DELAY := 15.0
+const BOT_ID_START := 1000
+const BOT_NAMES := ["Hawk", "Viper", "Ghost", "Rook", "Mako", "Jinx"]
+
+var _alone_time := 0.0
+var _bot_count := 0
+
 ## A top-down picture of the map, drawn once, for the HUD's mini map.
 var minimap_texture: Texture2D
 var map_size := MAP_SIZE
@@ -78,9 +86,24 @@ func _ready() -> void:
 		_add_player(1)  # the host's own soldier
 
 
+## Host only: if the host sits alone in the lobby for a while, a bot joins to play against.
+func _process(delta: float) -> void:
+	if not multiplayer.is_server() or Network.mode != Network.Mode.HOST:
+		return
+	var alone_in_lobby := _match.in_lobby() and _players.get_child_count() == 1
+	_alone_time = _alone_time + delta if alone_in_lobby else 0.0
+	if _alone_time >= BOT_JOIN_DELAY:
+		_alone_time = 0.0
+		_add_bot()
+
+
 # --- Players (the host decides who exists; the spawner copies that to everyone) -----
 
 func _add_player(peer_id: int) -> void:
+	# A real person is joining: bots step aside so the teams are made of people.
+	if _match.in_lobby():
+		for bot in _bots():
+			_remove_player(String(bot.name).to_int())
 	var team := _match.team_for_new_player()
 	_spawner.spawn({
 		"id": peer_id,
@@ -111,6 +134,30 @@ func _remove_player(peer_id: int) -> void:
 		_match.on_player_left(peer_id)
 
 
+func _add_bot() -> void:
+	_bot_count += 1
+	var bot_id := BOT_ID_START + _bot_count
+	var team := _match.team_for_new_player()
+	_spawner.spawn({
+		"id": bot_id,
+		"team": team,
+		"alive": _match.joiner_starts_alive(),
+		"position": spawn_point_for(team, -1),
+		"bot": true,
+		"name": "BOT %s" % BOT_NAMES[(_bot_count - 1) % BOT_NAMES.size()],
+	})
+	_match.mark_green(bot_id)
+	Network.announce.rpc("A bot joined %s" % MatchScript.TEAM_NAMES[team])
+
+
+func _bots() -> Array[Node]:
+	var list: Array[Node] = []
+	for player in _players.get_children():
+		if player.get("is_bot") and not player.is_queued_for_deletion():
+			list.append(player)
+	return list
+
+
 ## Runs on every computer when the host spawns a player.
 func _create_player(data: Variant) -> Node:
 	var info: Dictionary = data
@@ -120,7 +167,12 @@ func _create_player(data: Variant) -> Node:
 	player.position = info["position"]
 	player.team = info["team"]
 	player.alive = info["alive"]
-	player.set_multiplayer_authority(peer_id)
+	player.is_bot = info.get("bot", false)
+	if player.is_bot:
+		player.display_name = info["name"]
+		player.set_multiplayer_authority(1)  # the host runs bots
+	else:
+		player.set_multiplayer_authority(peer_id)
 	return player
 
 

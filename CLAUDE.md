@@ -32,6 +32,9 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
   COUNTDOWN (5 s frozen) -> LIVE (one life) -> ROUND_OVER -> ... -> MATCH_OVER -> LOBBY.
   Settings from menu: friendly fire, rounds to win, round minutes.
 - `scripts/lobby_panel.gd` – lobby screen shown by the HUD (team columns, Join, GREEN UP).
+- `scripts/bot_brain.gd` – host-only AI for bots. A bot is a normal player node with
+  `is_bot = true`, id 1000+, authority 1. main.gd adds one when the host is alone in the
+  lobby for 15 s and removes bots when a person joins the lobby. Bots fire via `fire_bullet`.
 - `scripts/hud.gd` – crosshair, ammo, health, score/timer/banner, mini map (top-down
   SubViewport render in main.gd; players/effects on visual layer 2 so they're excluded),
   kill feed, death screen, pause menu.
