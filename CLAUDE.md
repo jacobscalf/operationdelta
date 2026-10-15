@@ -27,13 +27,18 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
 - `scripts/player.gd` – one per player on every machine. Owner has authority over
   movement/aim/stance (MultiplayerSynchronizer); host decides hits (`_server_fire` traces
   camera ray then shoulder ray), health, death, respawn via RPCs.
-- `scripts/hud.gd` – crosshair, ammo, health, kill feed, death screen, pause menu.
+- `scripts/match.gd` – node "Match" under Main: host-run referee. Teams OPS (0, south) vs
+  TERRORISTS (1, north), warm-up -> countdown (frozen) -> live (one life) -> round over ->
+  match over. Settings from menu: friendly fire, rounds to win, round minutes.
+- `scripts/hud.gd` – crosshair, ammo, health, score/timer/banner, mini map (top-down
+  SubViewport render in main.gd; players/effects on visual layer 2 so they're excluded),
+  kill feed, death screen, pause menu.
 - `scripts/target_dummy.gd` – practice-only targets (`take_hit(damage, point, attacker_id)`).
 - `scripts/input_setup.gd` – autoload that registers all input actions in code.
 
 ## Roadmap
 1. ✅ Core feel (single player, gray box)
-2. LAN multiplayer: host/join, synced players (Godot high-level multiplayer)
-3. Rounds: two teams, one life per round, timer (Suppression)
+2. ✅ LAN multiplayer: host/join, synced players (Godot high-level multiplayer)
+3. ✅ Rounds: two teams, one life per round, timer, mini map, friendly-fire setting
 4. Real art, sound, lighting polish (licensed assets only)
 5. Internet play: dedicated server, server browser, voice chat

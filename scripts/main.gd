@@ -1,45 +1,66 @@
 extends Node3D
-## The match: builds the gray-box map "Range 01" and its lighting, opens the network
-## connection, and spawns a soldier for every player who joins.
+## The match scene: builds the gray-box map "Range 01", its lighting and mini map,
+## opens the network connection, and spawns a soldier for every player who joins.
+## The rounds themselves are run by the Match node (match.gd).
 ## All geometry here is placeholder blocks; real art replaces it in a later milestone.
 
 const PlayerScript := preload("res://scripts/player.gd")
 const DummyScript := preload("res://scripts/target_dummy.gd")
+const MatchScript := preload("res://scripts/match.gd")
 
 const SAND := Color(0.66, 0.57, 0.42)
 const CONCRETE := Color(0.6, 0.59, 0.56)
 const WALL := Color(0.72, 0.63, 0.5)
 const WOOD := Color(0.5, 0.38, 0.25)
 
-## Places players can appear. The host picks the one farthest from everyone else.
-const SPAWN_POINTS: Array[Vector3] = [
-	Vector3(0, 0.1, 55), Vector3(0, 0.1, -55),
-	Vector3(-12, 0.1, 52), Vector3(12, 0.1, -62),
-	Vector3(12, 0.1, 52), Vector3(-25, 0.1, -58),
-	Vector3(-25, 0.1, 58), Vector3(25, 0.1, -58),
-	Vector3(25, 0.1, 58), Vector3(-50, 0.1, 10), Vector3(50, 0.1, 10),
+## Where each team appears: Ops in the south, Terrorists in the north.
+const TEAM_SPAWNS := [
+	[
+		Vector3(0, 0.1, 55), Vector3(-4, 0.1, 57), Vector3(4, 0.1, 57), Vector3(-12, 0.1, 52),
+		Vector3(12, 0.1, 52), Vector3(-8, 0.1, 61), Vector3(8, 0.1, 61), Vector3(0, 0.1, 63),
+	],
+	[
+		Vector3(0, 0.1, -55), Vector3(-4, 0.1, -57), Vector3(4, 0.1, -57), Vector3(12, 0.1, -62),
+		Vector3(-25, 0.1, -58), Vector3(25, 0.1, -58), Vector3(-8, 0.1, -62), Vector3(8, 0.1, -62),
+	],
 ]
+
+## How much of the world the mini map covers (the map is 140 x 140 m, centered on 0,0).
+const MAP_SIZE := 140.0
+## Visual layer for things that should NOT appear on the mini map (players, effects).
+const LAYER_DYNAMIC := 2
+
+## A top-down picture of the map, drawn once, for the HUD's mini map.
+var minimap_texture: Texture2D
+var map_size := MAP_SIZE
 
 var _checker: ImageTexture
 var _materials := {}
 var _players := Node3D.new()
 var _spawner := MultiplayerSpawner.new()
+var _match: MatchScript
 
 
 func _ready() -> void:
 	_checker = _make_checker_texture()
 	_build_lighting()
 	_build_map()
+	_build_minimap()
 	if Network.mode == Network.Mode.PRACTICE:
 		_spawn_targets()
 
-	# Every computer builds these with the same names, so the spawner can match them up.
+	# Every computer builds these with the same names, so the network can match them up.
 	_players.name = "Players"
 	add_child(_players)
 	_spawner.name = "PlayerSpawner"
 	_spawner.spawn_function = _create_player
 	add_child(_spawner)
 	_spawner.spawn_path = _spawner.get_path_to(_players)
+	_match = MatchScript.new()
+	_match.name = "Match"
+	_match.players_node = _players
+	_match.spawn_point_for = spawn_point_for
+	add_child(_match)
 
 	var error_text := Network.open_connection()
 	if error_text != "":
@@ -60,13 +81,26 @@ func _ready() -> void:
 # --- Players (the host decides who exists; the spawner copies that to everyone) -----
 
 func _add_player(peer_id: int) -> void:
-	_spawner.spawn({ "id": peer_id, "position": pick_spawn_point() })
-	if peer_id != 1:
-		# Wait a moment so the new player's name has arrived before announcing it.
-		await get_tree().create_timer(1.0).timeout
-		var player := _players.get_node_or_null(str(peer_id))
-		if player:
-			Network.announce.rpc("%s joined" % player.get("display_name"))
+	var team := _match.team_for_new_player()
+	_spawner.spawn({
+		"id": peer_id,
+		"team": team,
+		"alive": _match.joiner_starts_alive(),
+		"position": spawn_point_for(team, -1),
+	})
+	if peer_id == 1:
+		return
+	# Wait a moment so the new player's computer has everything loaded, then catch it up.
+	await get_tree().create_timer(1.0).timeout
+	var player := _players.get_node_or_null(str(peer_id))
+	if not player:
+		return
+	_match.send_state_to(peer_id)
+	for other in _players.get_children():
+		if other != player:
+			other.call("send_life_to", peer_id)
+	Network.announce.rpc("%s joined %s" % [
+		player.get("display_name"), MatchScript.TEAM_NAMES[player.get("team")]])
 
 
 func _remove_player(peer_id: int) -> void:
@@ -74,32 +108,73 @@ func _remove_player(peer_id: int) -> void:
 	if player:
 		Network.announce.rpc("%s left" % player.get("display_name"))
 		player.queue_free()
+		_match.on_player_left()
 
 
 ## Runs on every computer when the host spawns a player.
 func _create_player(data: Variant) -> Node:
 	var info: Dictionary = data
 	var peer_id: int = info["id"]
-	var player: CharacterBody3D = PlayerScript.new()
+	var player: PlayerScript = PlayerScript.new()
 	player.name = str(peer_id)
 	player.position = info["position"]
+	player.team = info["team"]
+	player.alive = info["alive"]
 	player.set_multiplayer_authority(peer_id)
 	return player
 
 
-## The spawn point farthest from every living player.
-func pick_spawn_point() -> Vector3:
-	var best := SPAWN_POINTS[0]
+## A spawn point for a team. index >= 0 picks that slot (used at round start so teammates
+## don't stack); -1 picks the slot farthest from living enemies.
+func spawn_point_for(team: int, index: int) -> Vector3:
+	var points: Array = TEAM_SPAWNS[team]
+	if index >= 0:
+		return points[index % points.size()]
+	var best: Vector3 = points[0]
 	var best_distance := -1.0
-	for point in SPAWN_POINTS:
+	for point: Vector3 in points:
 		var nearest := INF
 		for player in _players.get_children():
-			if player.get("alive"):
+			if player.get("alive") and player.get("team") != team:
 				nearest = minf(nearest, point.distance_to((player as Node3D).global_position))
 		if nearest > best_distance:
 			best_distance = nearest
 			best = point
 	return best
+
+
+# --- Mini map ------------------------------------------------------------------------
+
+## Takes one top-down picture of the map with an extra camera. Only visual layer 1
+## (the level) is drawn, so players and effects never end up baked into the picture.
+func _build_minimap() -> void:
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(512, 512)
+	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	add_child(viewport)
+
+	var camera := Camera3D.new()
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	camera.size = MAP_SIZE
+	camera.near = 1.0
+	camera.far = 200.0
+	camera.cull_mask = 1
+	camera.position = Vector3(0, 100, 0)
+	camera.rotation_degrees = Vector3(-90, 0, 0)  # straight down, north (-Z) at the top
+	# Its own lighting setup: no fog or haze, extra contrast so walls stand out from the sand.
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.1, 0.1, 0.1)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.5, 0.5, 0.5)
+	env.ssao_enabled = true
+	env.ssao_intensity = 4.0
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.6
+	env.adjustment_brightness = 0.85
+	camera.environment = env
+	viewport.add_child(camera)
+	minimap_texture = viewport.get_texture()
 
 
 # --- Lighting -------------------------------------------------------------------

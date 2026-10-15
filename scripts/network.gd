@@ -15,6 +15,11 @@ signal message(text: String)
 var mode := Mode.PRACTICE
 var join_address := "127.0.0.1"
 var player_name := "Player"
+
+# Match settings (chosen by the host in the menu)
+var friendly_fire := false
+var rounds_to_win := 4
+var round_minutes := 5
 ## Shown on the menu after being sent back to it (e.g. "Host left the game").
 var last_error := ""
 

@@ -33,6 +33,7 @@ func _ready() -> void:
 	mesh.mesh = capsule
 	mesh.material_override = _material
 	mesh.position.y = 0.9
+	mesh.layers = 2  # keep targets off the mini map picture
 	add_child(mesh)
 
 	var shape := CapsuleShape3D.new()

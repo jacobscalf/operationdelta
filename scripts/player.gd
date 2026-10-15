@@ -9,6 +9,7 @@ extends CharacterBody3D
 ## The whole character (body, camera, gun, name tag, HUD) is built in code in _ready().
 
 const HudScript := preload("res://scripts/hud.gd")
+const MatchScript := preload("res://scripts/match.gd")
 
 enum Stance { STAND, CROUCH, PRONE }
 
@@ -68,10 +69,17 @@ const MAX_IMPACTS := 64
 const MAX_HEALTH := 100.0
 const HEAD_SIZE := 0.3  # top 30 cm of the body counts as the head
 const HEADSHOT_MULT := 4.0
-const RESPAWN_TIME := 5.0
 
-const OWN_COLOR := Color(0.33, 0.37, 0.25)  # olive drab
-const OTHER_COLOR := Color(0.45, 0.3, 0.22)  # everyone else, until we add teams
+## Uniform colors: Ops in olive drab, Terrorists in charcoal.
+const TEAM_BODY_COLORS := [Color(0.33, 0.37, 0.25), Color(0.2, 0.19, 0.18)]
+## Visual layer for everything a player draws, so the mini map's camera skips it.
+const LAYER_DYNAMIC := 2
+
+## Which side this player is on (Match.TEAM_OPS or Match.TEAM_TERRORISTS).
+## Set by the host when the player is spawned, and never changes.
+var team := 0
+## When this player last fired (milliseconds), so the mini map can briefly reveal enemies.
+var last_shot_msec := -100000
 
 # --- Synced to every computer by the MultiplayerSynchronizer (see _build_sync) ---
 var pitch := 0.0
@@ -88,6 +96,7 @@ var health := MAX_HEALTH
 var alive := true
 
 var _is_local := false
+var _match: MatchScript
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 var _recoil := 0.0  # extra upward view from firing; drifts back to zero
 var _jump_cooldown := 0.0
@@ -110,6 +119,7 @@ var _body_material: StandardMaterial3D
 var _pivot: Node3D
 var _arm: SpringArm3D
 var _camera: Camera3D
+var _gun: MeshInstance3D
 var _muzzle: Node3D
 var _flash_light: OmniLight3D
 var _name_tag: Label3D
@@ -121,6 +131,7 @@ var _impact_material: StandardMaterial3D
 func _ready() -> void:
 	add_to_group("players")
 	_is_local = is_multiplayer_authority()
+	_match = get_tree().current_scene.get_node("Match")
 	_build_body()
 	_build_camera()
 	_build_gun()
@@ -129,18 +140,21 @@ func _ready() -> void:
 	_build_sync()
 	_apply_stance_shape()
 	_pivot.position.y = STANCE_EYE[stance]
+	_body_material.albedo_color = TEAM_BODY_COLORS[team]
+	_name_tag.modulate = MatchScript.TEAM_COLORS[team]
+	if not alive:
+		_hide_body()  # joined mid-round: sit out until the next round
 
 	if _is_local:
 		add_to_group("local_player")
 		display_name = Network.player_name
 		_camera.current = true
-		_name_tag.visible = false
 		_hud = HudScript.new()
 		add_child(_hud)
+		if not alive:
+			_hud.show_death("", -1.0)
 		# The mouse stays free until the player clicks into the game (see the HUD's pause screen).
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	else:
-		_body_material.albedo_color = OTHER_COLOR
 
 
 func _notification(what: int) -> void:
@@ -159,13 +173,14 @@ func _build_body() -> void:
 	add_child(_collision)
 
 	_body_material = StandardMaterial3D.new()
-	_body_material.albedo_color = OWN_COLOR
+	_body_material.albedo_color = TEAM_BODY_COLORS[0]
 	_body_material.roughness = 0.8
 	_body_mesh = MeshInstance3D.new()
 	var mesh := CapsuleMesh.new()
 	mesh.radius = RADIUS
 	_body_mesh.mesh = mesh
 	_body_mesh.material_override = _body_material
+	_body_mesh.layers = LAYER_DYNAMIC
 	add_child(_body_mesh)
 
 
@@ -192,17 +207,18 @@ func _build_gun() -> void:
 	mat.albedo_color = Color(0.12, 0.12, 0.12)
 	mat.metallic = 0.6
 	mat.roughness = 0.4
-	var gun := MeshInstance3D.new()
+	_gun = MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = Vector3(0.08, 0.12, 0.75)
-	gun.mesh = box
-	gun.material_override = mat
-	gun.position = SHOULDER_OFFSET + Vector3(0, 0, -0.45)
-	_pivot.add_child(gun)
+	_gun.mesh = box
+	_gun.material_override = mat
+	_gun.position = SHOULDER_OFFSET + Vector3(0, 0, -0.45)
+	_gun.layers = LAYER_DYNAMIC
+	_pivot.add_child(_gun)
 
 	_muzzle = Node3D.new()
 	_muzzle.position = Vector3(0, 0.02, -0.4)
-	gun.add_child(_muzzle)
+	_gun.add_child(_muzzle)
 
 	_flash_light = OmniLight3D.new()
 	_flash_light.light_color = Color(1.0, 0.75, 0.4)
@@ -217,7 +233,8 @@ func _build_name_tag() -> void:
 	_name_tag.font_size = 48
 	_name_tag.pixel_size = 0.004
 	_name_tag.outline_size = 12
-	_name_tag.modulate = Color(1, 0.85, 0.75)
+	_name_tag.layers = LAYER_DYNAMIC
+	_name_tag.visible = false
 	add_child(_name_tag)
 
 
@@ -300,10 +317,12 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	# During the countdown before a round you can look around but not move or shoot.
+	var can_act := captured and alive and not _match.is_frozen()
 	var input := Vector2.ZERO
-	if captured and alive:
+	if can_act:
 		input = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	aiming = captured and alive and Input.is_action_pressed("aim")
+	aiming = can_act and Input.is_action_pressed("aim")
 
 	var sprinting := (
 		Input.is_action_pressed("sprint") and stance == Stance.STAND
@@ -326,7 +345,7 @@ func _physics_process(delta: float) -> void:
 			_landing_slow = LANDING_SLOW
 		_was_on_floor = on_floor
 
-		if captured and on_floor and Input.is_action_just_pressed("jump"):
+		if can_act and on_floor and Input.is_action_just_pressed("jump"):
 			_try_jump()
 
 		var target := transform.basis * Vector3(input.x, 0.0, input.y) * speed
@@ -336,7 +355,7 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 
 	_update_camera(delta)
-	_update_weapon(delta, sprinting, captured)
+	_update_weapon(delta, sprinting, can_act)
 
 
 func _update_camera(delta: float) -> void:
@@ -358,10 +377,12 @@ func _update_remote_visuals(delta: float) -> void:
 	_pivot.rotation.x = pitch
 	_name_tag.text = display_name
 	_name_tag.position.y = float(STANCE_HEIGHT[stance]) + 0.35
-	_name_tag.visible = alive
+	# Only teammates get name tags; spotting enemies is up to you.
+	var me := get_tree().get_first_node_in_group("local_player")
+	_name_tag.visible = alive and me != null and me.get("team") == team
 
 
-func _update_weapon(delta: float, sprinting: bool, captured: bool) -> void:
+func _update_weapon(delta: float, sprinting: bool, can_act: bool) -> void:
 	_fire_cooldown = maxf(_fire_cooldown - delta, 0.0)
 
 	if _reload_left > 0.0:
@@ -386,7 +407,7 @@ func _update_weapon(delta: float, sprinting: bool, captured: bool) -> void:
 	if not trigger:
 		_fire_locked = false
 	var can_fire := (
-		captured and alive and trigger and not _fire_locked and not sprinting
+		can_act and trigger and not _fire_locked and not sprinting
 		and _reload_left <= 0.0 and _fire_cooldown <= 0.0
 	)
 	if can_fire:
@@ -497,11 +518,18 @@ func _server_fire(from: Vector3, dir: Vector3) -> void:
 		end_point = hit["position"]
 		var target: Object = hit["collider"]
 		if target.has_method("take_hit"):
-			var killed: bool = target.take_hit(DAMAGE, end_point, get_multiplayer_authority())
-			_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
+			if _can_damage(target):
+				var killed: bool = target.take_hit(DAMAGE, end_point, get_multiplayer_authority())
+				_hit_confirmed.rpc_id(get_multiplayer_authority(), killed)
 		else:
 			normal = hit["normal"]
 	_show_shot.rpc(end_point, normal)
+
+
+## Teammates can only be hurt when the host turned friendly fire on.
+func _can_damage(target: Object) -> bool:
+	var target_team: Variant = target.get("team")
+	return target_team == null or target_team != team or _match.friendly_fire
 
 
 func _raycast(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vector3) -> Dictionary:
@@ -519,6 +547,7 @@ func _shoulder_point() -> Vector3:
 func _show_shot(end_point: Vector3, impact_normal: Vector3) -> void:
 	if not _from_host():
 		return
+	last_shot_msec = Time.get_ticks_msec()
 	_spawn_tracer(_muzzle.global_position, end_point)
 	_muzzle_flash()
 	if impact_normal != Vector3.ZERO:
@@ -571,7 +600,7 @@ func take_hit(damage: float, hit_point: Vector3, attacker_id: int = 0) -> bool:
 	if health > 0.0:
 		return false
 	_die.rpc(attacker_id)
-	_respawn_later()
+	_match.on_player_killed(self)
 	return true
 
 
@@ -592,18 +621,42 @@ func _die(killer_id: int) -> void:
 	_collision.set_deferred("disabled", true)
 	create_tween().tween_property(_body_mesh, "rotation:x", deg_to_rad(-90), 0.4)
 	var killer_name := _name_of(killer_id)
-	Network.message.emit("%s killed %s" % [killer_name, display_name])
+	var killer := get_parent().get_node_or_null(str(killer_id))
+	if killer and killer != self and killer.get("team") == team:
+		Network.message.emit("%s killed teammate %s" % [killer_name, display_name])
+	else:
+		Network.message.emit("%s killed %s" % [killer_name, display_name])
 	if _hud:
-		_hud.show_death(killer_name, RESPAWN_TIME)
+		var respawn_time := MatchScript.WARMUP_RESPAWN_TIME if _match.respawns_enabled() else -1.0
+		_hud.show_death(killer_name, respawn_time)
 		_reload_left = 0.0
 
 
-func _respawn_later() -> void:
-	await get_tree().create_timer(RESPAWN_TIME).timeout
-	if not is_inside_tree():
-		return  # The player left while dead.
-	var spawn_point: Vector3 = get_tree().current_scene.call("pick_spawn_point")
+## Host only: bring this player back at a spawn point (used by the Match).
+func respawn_at(spawn_point: Vector3) -> void:
 	_respawn.rpc(spawn_point)
+
+
+## Host only: tell a newly joined player whether this player is alive right now.
+func send_life_to(peer_id: int) -> void:
+	_sync_life.rpc_id(peer_id, alive, health)
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _sync_life(is_alive: bool, value: float) -> void:
+	if not _from_host():
+		return
+	health = value
+	if not is_alive and alive:
+		alive = false
+		_hide_body()
+
+
+## Removes the body completely (for players sitting out a round they joined late).
+func _hide_body() -> void:
+	_collision.set_deferred("disabled", true)
+	_body_mesh.visible = false
+	_gun.visible = false
 
 
 @rpc("any_peer", "call_local", "reliable")
@@ -614,6 +667,8 @@ func _respawn(spawn_point: Vector3) -> void:
 	health = MAX_HEALTH
 	_collision.set_deferred("disabled", false)
 	_body_mesh.rotation.x = 0.0
+	_body_mesh.visible = true
+	_gun.visible = true
 	if _is_local:
 		global_position = spawn_point
 		velocity = Vector3.ZERO

@@ -3,6 +3,9 @@ extends Control
 
 var _name_edit := LineEdit.new()
 var _address_edit := LineEdit.new()
+var _friendly_fire := CheckBox.new()
+var _rounds_to_win := SpinBox.new()
+var _round_minutes := SpinBox.new()
 
 
 func _ready() -> void:
@@ -33,6 +36,14 @@ func _ready() -> void:
 
 	box.add_child(_button("Practice (solo, with targets)", _on_practice))
 	box.add_child(_button("Host Match", _on_host))
+
+	# Host settings (only used when you host)
+	_friendly_fire.text = "Friendly fire"
+	_friendly_fire.button_pressed = Network.friendly_fire
+	box.add_child(_friendly_fire)
+	box.add_child(_setting_row("Rounds to win", _rounds_to_win, 1, 10, Network.rounds_to_win))
+	box.add_child(_setting_row("Round length (minutes)", _round_minutes, 1, 15, Network.round_minutes))
+	box.add_child(_label("", 4))
 
 	box.add_child(_label("Host's IP address", 16, HORIZONTAL_ALIGNMENT_LEFT))
 	_address_edit.text = Network.join_address
@@ -65,6 +76,9 @@ func _on_practice() -> void:
 
 func _on_host() -> void:
 	_save_name()
+	Network.friendly_fire = _friendly_fire.button_pressed
+	Network.rounds_to_win = int(_rounds_to_win.value)
+	Network.round_minutes = int(_round_minutes.value)
 	Network.start(Network.Mode.HOST)
 
 
@@ -85,6 +99,18 @@ func _label(text: String, font_size: int,
 	label.horizontal_alignment = align
 	label.add_theme_font_size_override("font_size", font_size)
 	return label
+
+
+func _setting_row(text: String, spin: SpinBox, min_value: int, max_value: int, value: int) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	var label := _label(text, 16, HORIZONTAL_ALIGNMENT_LEFT)
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(label)
+	spin.min_value = min_value
+	spin.max_value = max_value
+	spin.value = value
+	row.add_child(spin)
+	return row
 
 
 func _button(text: String, on_pressed: Callable) -> Button:
