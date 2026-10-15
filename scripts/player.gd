@@ -11,6 +11,7 @@ extends CharacterBody3D
 const HudScript := preload("res://scripts/hud.gd")
 const MatchScript := preload("res://scripts/match.gd")
 const BotBrainScript := preload("res://scripts/bot_brain.gd")
+const SoldierModelScript := preload("res://scripts/soldier_model.gd")
 
 enum Stance { STAND, CROUCH, PRONE }
 
@@ -95,6 +96,7 @@ var is_bot := false
 # --- Synced to every computer by the MultiplayerSynchronizer (see _build_sync) ---
 var pitch := 0.0
 var aiming := false
+var reloading := false
 var display_name := "Player"
 var stance: Stance = Stance.STAND:
 	set(value):
@@ -125,6 +127,11 @@ var _bloom := 0.0
 var _impacts: Array[Node3D] = []
 var _last_step_check := Vector3.ZERO
 var _step_distance := 0.0
+var _model: SoldierModelScript
+var _last_model_position := Vector3.ZERO
+var _model_velocity := Vector3.ZERO
+var _was_reloading := false
+var _model_team := -1
 
 var _collision: CollisionShape3D
 var _capsule: CapsuleShape3D
@@ -154,6 +161,12 @@ func _ready() -> void:
 	_build_camera()
 	_build_gun()
 	_build_name_tag()
+	# The animated soldier replaces the placeholder capsule and box gun.
+	_model = SoldierModelScript.new()
+	add_child(_model)
+	_body_mesh.visible = false
+	_gun.visible = false
+	_last_model_position = global_position
 	_build_effect_materials()
 	_build_sync()
 	_apply_stance_shape()
@@ -241,7 +254,7 @@ func _build_gun() -> void:
 	_flash_light.light_color = Color(1.0, 0.75, 0.4)
 	_flash_light.omni_range = 4.0
 	_flash_light.light_energy = 0.0
-	_muzzle.add_child(_flash_light)
+	add_child(_flash_light)  # moved to the rifle's muzzle each time it fires
 
 
 func _build_name_tag() -> void:
@@ -268,7 +281,7 @@ func _build_effect_materials() -> void:
 ## Lists which properties get copied from this player's owner to every other computer.
 func _build_sync() -> void:
 	var config := SceneReplicationConfig.new()
-	for property: String in [":position", ":rotation", ":pitch", ":stance", ":aiming"]:
+	for property: String in [":position", ":rotation", ":pitch", ":stance", ":aiming", ":reloading"]:
 		var path := NodePath("." + property)
 		config.add_property(path)
 		config.property_set_spawn(path, true)
@@ -354,6 +367,7 @@ func _physics_process(delta: float) -> void:
 
 	_move(delta, input, speed, can_act and Input.is_action_just_pressed("jump"))
 	_update_footsteps()
+	_update_model(delta)
 	_update_camera(delta)
 	_update_weapon(delta, sprinting, can_act)
 
@@ -421,9 +435,29 @@ func _update_footsteps() -> void:
 		Sfx.play_3d("step", global_position, volume, 2.5)
 
 
+## Drives the animated soldier from how this soldier is actually moving. Using the change
+## in position (rather than input) means it works the same for you, other players and bots.
+func _update_model(delta: float) -> void:
+	if is_multiplayer_authority():
+		reloading = _reload_left > 0.0
+	if delta > 0.0:
+		var measured := (global_position - _last_model_position) / delta
+		if measured.length() > 20.0:
+			measured = Vector3.ZERO  # a teleport (respawn), not real movement
+		_model_velocity = _model_velocity.lerp(measured, 1.0 - exp(-15.0 * delta))
+	_last_model_position = global_position
+	var local_velocity := global_basis.inverse() * _model_velocity
+	var airborne := absf(_model_velocity.y) > 1.0
+	_model.update(delta, local_velocity, stance, airborne, pitch)
+	if reloading and not _was_reloading:
+		_model.play_reload()
+	_was_reloading = reloading
+
+
 ## Other players: their position arrives from the network; we just pose the gun and name tag.
 func _update_remote_visuals(delta: float) -> void:
 	_update_footsteps()
+	_update_model(delta)
 	var k := 1.0 - exp(-CAMERA_SMOOTH * delta)
 	var eye: float = STANCE_EYE[stance]
 	_pivot.position.y = lerpf(_pivot.position.y, eye, k)
@@ -613,7 +647,7 @@ func _show_shot(end_point: Vector3, impact_normal: Vector3, hit_body: bool) -> v
 	if not _from_host():
 		return
 	last_shot_msec = Time.get_ticks_msec()
-	_spawn_tracer(_muzzle.global_position, end_point)
+	_spawn_tracer(_model.muzzle_position(), end_point)
 	_muzzle_flash()
 	_play_gunshot()
 	if impact_normal != Vector3.ZERO:
@@ -717,7 +751,7 @@ func _die(killer_id: int) -> void:
 		return
 	alive = false
 	_collision.set_deferred("disabled", true)
-	create_tween().tween_property(_body_mesh, "rotation:x", deg_to_rad(-90), 0.4)
+	_model.play_death(stance)
 	var killer_name := _name_of(killer_id)
 	var killer := get_parent().get_node_or_null(str(killer_id))
 	if killer and killer != self and killer.get("team") == team:
@@ -768,6 +802,9 @@ func _set_team(new_team: int) -> void:
 func _apply_team_colors() -> void:
 	_body_material.albedo_color = TEAM_BODY_COLORS[team]
 	_name_tag.modulate = MatchScript.TEAM_COLORS[team]
+	if _model and _model_team != team:
+		_model_team = team
+		_model.setup(team)  # Ops wear the SWAT kit, Terrorists the hooded gas-mask outfit
 
 
 ## Host only: take this player off the field (going back to the lobby).
@@ -788,8 +825,7 @@ func _leave_field() -> void:
 ## Removes the body completely (for players sitting out a round they joined late).
 func _hide_body() -> void:
 	_collision.set_deferred("disabled", true)
-	_body_mesh.visible = false
-	_gun.visible = false
+	_model.visible = false
 
 
 @rpc("any_peer", "call_local", "reliable")
@@ -799,9 +835,8 @@ func _respawn(spawn_point: Vector3) -> void:
 	alive = true
 	health = MAX_HEALTH
 	_collision.set_deferred("disabled", false)
-	_body_mesh.rotation.x = 0.0
-	_body_mesh.visible = true
-	_gun.visible = true
+	_model.visible = true
+	_model.revive()
 	if is_multiplayer_authority():  # the computer that controls this soldier (bots: the host)
 		if _brain:
 			_brain.reset()
@@ -864,6 +899,7 @@ func _spawn_impact(point: Vector3, normal: Vector3) -> void:
 
 
 func _muzzle_flash() -> void:
+	_flash_light.global_position = _model.muzzle_position()
 	_flash_light.light_energy = 4.0
 	var tween := create_tween()
 	tween.tween_property(_flash_light, "light_energy", 0.0, 0.06)

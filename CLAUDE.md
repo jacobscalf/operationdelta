@@ -40,6 +40,15 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
   kill feed, death screen, pause menu.
 - `scripts/target_dummy.gd` – practice-only targets (`take_hit(damage, point, attacker_id)`).
 - `scripts/input_setup.gd` – autoload that registers all input actions in code.
+- `scripts/soldier_model.gd` – the visible soldier: Mixamo model (Ops = Swat Guy,
+  Terrorists = Heraklios) + AnimationTree built in code (stand/crouch BlendSpace2D, prone
+  BlendSpace1D, jump, upper-body reload OneShot, death transitions). Driven by
+  `player._update_model()` from measured movement, so it works for remote players and bots.
+- `scripts/aim_modifier.gd` – SkeletonModifier3D: bends the spine with aim pitch and places
+  the rifle from the right hand toward the left hand each frame.
+- `tools/build_characters.gd` – rebuilds `assets/characters/*.scn` + `soldier_anims.res`
+  from the raw Mixamo FBX files in `assets/characters/source/` (git-ignored; re-download
+  from Mixamo if missing). Textures are shrunk to 1024 px, S3TC-compressed.
 - `scripts/sfx.gd` – autoload `Sfx`: `play_3d(name, pos, db, unit_size)` / `play_ui(name, db)`.
   Sounds live in `assets/audio/` (all CC0, see `assets/audio/CREDITS.md`). Ops fire M4
   sounds, Terrorists AK; far shots (>45 m) use the distant recordings. Footsteps come from

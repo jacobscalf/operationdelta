@@ -1,3 +1,6 @@
 # Godot cache
 .godot/
 *.tmp
+
+# Raw Mixamo downloads (large; processed versions are committed instead)
+assets/characters/source/
