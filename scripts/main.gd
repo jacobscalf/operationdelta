@@ -108,7 +108,7 @@ func _remove_player(peer_id: int) -> void:
 	if player:
 		Network.announce.rpc("%s left" % player.get("display_name"))
 		player.queue_free()
-		_match.on_player_left()
+		_match.on_player_left(peer_id)
 
 
 ## Runs on every computer when the host spawns a player.

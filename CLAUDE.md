@@ -28,8 +28,10 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
   movement/aim/stance (MultiplayerSynchronizer); host decides hits (`_server_fire` traces
   camera ray then shoulder ray), health, death, respawn via RPCs.
 - `scripts/match.gd` – node "Match" under Main: host-run referee. Teams OPS (0, south) vs
-  TERRORISTS (1, north), warm-up -> countdown (frozen) -> live (one life) -> round over ->
-  match over. Settings from menu: friendly fire, rounds to win, round minutes.
+  TERRORISTS (1, north). LOBBY (pick side, green up) -> STARTING (10 s, all green) ->
+  COUNTDOWN (5 s frozen) -> LIVE (one life) -> ROUND_OVER -> ... -> MATCH_OVER -> LOBBY.
+  Settings from menu: friendly fire, rounds to win, round minutes.
+- `scripts/lobby_panel.gd` – lobby screen shown by the HUD (team columns, Join, GREEN UP).
 - `scripts/hud.gd` – crosshair, ammo, health, score/timer/banner, mini map (top-down
   SubViewport render in main.gd; players/effects on visual layer 2 so they're excluded),
   kill feed, death screen, pause menu.

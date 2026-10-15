@@ -76,7 +76,7 @@ const TEAM_BODY_COLORS := [Color(0.33, 0.37, 0.25), Color(0.2, 0.19, 0.18)]
 const LAYER_DYNAMIC := 2
 
 ## Which side this player is on (Match.TEAM_OPS or Match.TEAM_TERRORISTS).
-## Set by the host when the player is spawned, and never changes.
+## Set by the host at spawn; can only change in the lobby (see set_team).
 var team := 0
 ## When this player last fired (milliseconds), so the mini map can briefly reveal enemies.
 var last_shot_msec := -100000
@@ -140,10 +140,9 @@ func _ready() -> void:
 	_build_sync()
 	_apply_stance_shape()
 	_pivot.position.y = STANCE_EYE[stance]
-	_body_material.albedo_color = TEAM_BODY_COLORS[team]
-	_name_tag.modulate = MatchScript.TEAM_COLORS[team]
+	_apply_team_colors()
 	if not alive:
-		_hide_body()  # joined mid-round: sit out until the next round
+		_hide_body()  # in the lobby, or joined mid-round: sit out until the next round
 
 	if _is_local:
 		add_to_group("local_player")
@@ -151,7 +150,7 @@ func _ready() -> void:
 		_camera.current = true
 		_hud = HudScript.new()
 		add_child(_hud)
-		if not alive:
+		if not alive and not _match.in_lobby():
 			_hud.show_death("", -1.0)
 		# The mouse stays free until the player clicks into the game (see the HUD's pause screen).
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -284,8 +283,8 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not _is_local:
-		return
+	if not _is_local or _match.in_lobby():
+		return  # The lobby screen handles its own clicks.
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 
 	if event is InputEventMouseMotion:
@@ -627,7 +626,7 @@ func _die(killer_id: int) -> void:
 	else:
 		Network.message.emit("%s killed %s" % [killer_name, display_name])
 	if _hud:
-		var respawn_time := MatchScript.WARMUP_RESPAWN_TIME if _match.respawns_enabled() else -1.0
+		var respawn_time := MatchScript.PRACTICE_RESPAWN_TIME if _match.respawns_enabled() else -1.0
 		_hud.show_death(killer_name, respawn_time)
 		_reload_left = 0.0
 
@@ -637,19 +636,54 @@ func respawn_at(spawn_point: Vector3) -> void:
 	_respawn.rpc(spawn_point)
 
 
-## Host only: tell a newly joined player whether this player is alive right now.
+## Host only: tell a newly joined player this player's side and whether they're alive.
 func send_life_to(peer_id: int) -> void:
-	_sync_life.rpc_id(peer_id, alive, health)
+	_sync_life.rpc_id(peer_id, alive, health, team)
 
 
 @rpc("any_peer", "call_local", "reliable")
-func _sync_life(is_alive: bool, value: float) -> void:
+func _sync_life(is_alive: bool, value: float, new_team: int) -> void:
 	if not _from_host():
 		return
 	health = value
+	team = new_team
+	_apply_team_colors()
 	if not is_alive and alive:
 		alive = false
 		_hide_body()
+
+
+## Host only: move this player to the other side (lobby only).
+func set_team(new_team: int) -> void:
+	_set_team.rpc(new_team)
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _set_team(new_team: int) -> void:
+	if not _from_host():
+		return
+	team = new_team
+	_apply_team_colors()
+
+
+func _apply_team_colors() -> void:
+	_body_material.albedo_color = TEAM_BODY_COLORS[team]
+	_name_tag.modulate = MatchScript.TEAM_COLORS[team]
+
+
+## Host only: take this player off the field (going back to the lobby).
+func leave_field() -> void:
+	_leave_field.rpc()
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _leave_field() -> void:
+	if not _from_host():
+		return
+	alive = false
+	_hide_body()
+	if _hud:
+		_hud.hide_death()
 
 
 ## Removes the body completely (for players sitting out a round they joined late).

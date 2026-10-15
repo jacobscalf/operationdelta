@@ -8,6 +8,7 @@ const HELP_TEXT := "WASD move   Shift sprint   Space jump   C crouch   Z prone  
 const FEED_TIME := 6.0  # seconds a kill-feed line stays up
 const FEED_LINES := 5
 const MatchScript := preload("res://scripts/match.gd")
+const LobbyPanelScript := preload("res://scripts/lobby_panel.gd")
 const MINIMAP_SIZE := 200.0
 const MINIMAP_MARGIN := 20.0
 const ENEMY_REVEAL_MSEC := 1500  # enemies show on the mini map this long after they fire
@@ -16,6 +17,9 @@ const ENEMY_DOT := Color(1.0, 0.3, 0.25)
 
 var _canvas := Control.new()
 var _pause_screen := Control.new()
+var _lobby_panel: LobbyPanelScript
+var _match: MatchScript
+var _was_in_lobby := false
 var _spread_px := 10.0
 var _ammo := 0
 var _reserve := 0
@@ -39,6 +43,11 @@ func _ready() -> void:
 	_canvas.draw.connect(_draw_hud)
 	add_child(_canvas)
 	_build_pause_screen()
+	_match = get_tree().current_scene.get_node("Match")
+	_lobby_panel = LobbyPanelScript.new()
+	_lobby_panel.setup(_match)
+	_lobby_panel.visible = false
+	add_child(_lobby_panel)
 	Network.message.connect(_add_feed_line)
 
 	match Network.mode:
@@ -60,7 +69,15 @@ func _process(delta: float) -> void:
 	for line in _feed:
 		line["time_left"] -= delta
 	_feed.assign(_feed.filter(func(line: Dictionary) -> bool: return line["time_left"] > 0.0))
-	_pause_screen.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+	# The lobby screen replaces the pause screen while it's up.
+	var in_lobby := _match.in_lobby()
+	if in_lobby and not _was_in_lobby:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	elif _was_in_lobby and not in_lobby and get_window().has_focus():
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # straight into the action
+	_was_in_lobby = in_lobby
+	_lobby_panel.visible = in_lobby
+	_pause_screen.visible = not in_lobby and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 	_canvas.queue_redraw()
 
 
@@ -186,7 +203,7 @@ func _draw_hud() -> void:
 			_canvas.draw_line(center + d * 7.0, center + d * 15.0, hit_color, 2.0)
 
 	# Death screen
-	if _death_text != "":
+	if _death_text != "" and not _match.in_lobby():
 		_canvas.draw_rect(Rect2(Vector2.ZERO, size), Color(0.15, 0, 0, 0.35))
 		_text(font, Vector2(0, center.y - 40), _death_text, 40, HORIZONTAL_ALIGNMENT_CENTER, size.x)
 		var sub_text := "Respawning in %d" % ceili(_respawn_left)
@@ -224,8 +241,8 @@ func _draw_hud() -> void:
 
 ## Score, round timer and the big banner in the middle (round start, round won, etc).
 func _draw_match_info(font: Font, size: Vector2) -> void:
-	var match_node := get_tree().current_scene.get_node_or_null("Match") as MatchScript
-	if not match_node or match_node.state == MatchScript.State.PRACTICE:
+	var match_node := _match
+	if match_node.state == MatchScript.State.PRACTICE or match_node.in_lobby():
 		return
 	var center_x := size.x * 0.5
 	var my_team: int = get_parent().get("team")
@@ -243,8 +260,6 @@ func _draw_match_info(font: Font, size: Vector2) -> void:
 
 	var status := ""
 	match match_node.state:
-		MatchScript.State.WAITING:
-			status = "WARM-UP  —  waiting for players on both teams"
 		MatchScript.State.COUNTDOWN, MatchScript.State.LIVE:
 			var seconds := ceili(match_node.time_left)
 			status = "%d:%02d" % [seconds / 60, seconds % 60]
