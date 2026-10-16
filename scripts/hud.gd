@@ -255,7 +255,7 @@ func _draw_hud() -> void:
 	_text(font, Vector2(24, size.y - 100), "KILLS  %d" % _kills, 20, HORIZONTAL_ALIGNMENT_LEFT)
 
 	# Title and mode (top left), controls help (bottom center)
-	_text(font, Vector2(24, 36), "OPERATION: DELTA  —  Range 01", 20, HORIZONTAL_ALIGNMENT_LEFT, 500.0)
+	_text(font, Vector2(24, 36), "OPERATION: DELTA  —  %s" % Network.map_name, 20, HORIZONTAL_ALIGNMENT_LEFT, 500.0)
 	_text(font, Vector2(24, 60), _mode_text, 15, HORIZONTAL_ALIGNMENT_LEFT, 500.0)
 	_text(font, Vector2(0, size.y - 14), HELP_TEXT, 14, HORIZONTAL_ALIGNMENT_CENTER, size.x)
 
@@ -310,7 +310,10 @@ func _draw_minimap(size: Vector2) -> void:
 	var texture: Texture2D = get_tree().current_scene.get("minimap_texture")
 	if not texture:
 		return
-	var rect := Rect2(size.x - MINIMAP_SIZE - MINIMAP_MARGIN, MINIMAP_MARGIN, MINIMAP_SIZE, MINIMAP_SIZE)
+	# The mini map keeps the map's shape: MINIMAP_SIZE wide, as tall as the proportions need.
+	var map_size: Vector2 = get_tree().current_scene.get("map_size")
+	var height := MINIMAP_SIZE * map_size.y / map_size.x
+	var rect := Rect2(size.x - MINIMAP_SIZE - MINIMAP_MARGIN, MINIMAP_MARGIN, MINIMAP_SIZE, height)
 	_canvas.draw_rect(rect.grow(3), Color(0, 0, 0, 0.6))
 	_canvas.draw_texture_rect(texture, rect, false, Color(1, 1, 1, 0.9))
 
@@ -337,9 +340,10 @@ func _draw_minimap(size: Vector2) -> void:
 
 ## Converts a world position (x, z) to a point on the mini map.
 func _map_point(world: Vector3, rect: Rect2) -> Vector2:
-	var map_size: float = get_tree().current_scene.get("map_size")
-	var u := clampf(world.x / map_size + 0.5, 0.0, 1.0)
-	var v := clampf(world.z / map_size + 0.5, 0.0, 1.0)
+	var map_size: Vector2 = get_tree().current_scene.get("map_size")
+	var map_center: Vector2 = get_tree().current_scene.get("map_center")
+	var u := clampf((world.x - map_center.x) / map_size.x + 0.5, 0.0, 1.0)
+	var v := clampf((world.z - map_center.y) / map_size.y + 0.5, 0.0, 1.0)
 	return rect.position + Vector2(u, v) * rect.size
 
 

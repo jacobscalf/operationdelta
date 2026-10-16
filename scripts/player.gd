@@ -304,7 +304,18 @@ func _build_sync() -> void:
 	sync.name = "Sync"
 	sync.replication_config = config
 	sync.set_multiplayer_authority(get_multiplayer_authority())
+	if multiplayer.is_server():
+		# Only send this soldier to clients that have finished loading the map.
+		sync.public_visibility = false
+		var ready_peers: Array = get_tree().current_scene.get("ready_peers")
+		for peer: int in ready_peers:
+			sync.set_visibility_for(peer, true)
 	add_child(sync)
+
+
+## Host only: a client finished loading, so start sending them this soldier.
+func show_to_peer(peer_id: int) -> void:
+	($Sync as MultiplayerSynchronizer).set_visibility_for(peer_id, true)
 
 
 # --- Input (own player only) ---------------------------------------------------
@@ -616,7 +627,6 @@ func fire_bullet(from: Vector3, dir: Vector3) -> void:
 	var shoulder := _shoulder_point()
 	var to := aim_point + (aim_point - shoulder).normalized() * 0.1
 	var hit := _raycast(space, shoulder, to)
-
 	var end_point := to
 	var normal := Vector3.ZERO
 	var hit_body := false

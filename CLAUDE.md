@@ -21,9 +21,17 @@ names, maps and assets must be original; never use Sony/SOCOM IP).
 ## Layout
 - `scenes/menu.tscn` + `scripts/menu.gd` – entry scene: name, Practice / Host / Join.
   Test shortcuts: launch with `-- --host` or `-- --join=127.0.0.1`.
-- `scenes/main.tscn` + `scripts/main.gd` – the match: builds map "Range 01", opens the
-  connection, spawns players via a MultiplayerSpawner (custom spawn_function), spawn points.
-- `scripts/network.gd` – autoload `Network`: mode, name, ENet host/join on port 7777, leave().
+- `scenes/main.tscn` + `scripts/main.gd` – the match: loads the map script named by
+  `Network.map_name`, builds the mini map, spawns players via a MultiplayerSpawner.
+  Host keeps `ready_peers`; players' synchronizers are only visible to ready peers.
+- `scripts/maps/map_kit.gd` – base class for maps: data (size, center, team_spawns,
+  waypoints, routes Terrorist->Ops, lighting) + builders (box, wall with door()/window()
+  openings, building, ramp, cliff, boulder, wrecked_truck, crate, sandbags, lamp).
+- `scripts/maps/red_canyon.gd` – default map, 180x140 canyon (original design inspired by
+  classic desert maps — not a copy). `scripts/maps/range_01.gd` – test map with targets.
+- `scripts/network.gd` – autoload `Network`: mode, name, map, ENet on port 7777, leave().
+  Join flow: client connects from the menu -> host `tell_map` -> client loads map ->
+  `Main.client_ready` -> host shows players to that peer and spawns its soldier.
 - `scripts/player.gd` – one per player on every machine. Owner has authority over
   movement/aim/stance (MultiplayerSynchronizer); host decides hits (`_server_fire` traces
   camera ray then shoulder ray), health, death, respawn via RPCs.

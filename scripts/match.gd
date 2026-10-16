@@ -39,6 +39,8 @@ var lobby: Array = []
 
 ## Set by main.gd: the node holding every player.
 var players_node: Node
+## Set by main.gd (host): clients that have loaded the map. Only they get match updates.
+var ready_peers: Array[int] = []
 ## Set by main.gd: Callable(team, index) -> Vector3 spawn position.
 var spawn_point_for: Callable
 
@@ -248,8 +250,10 @@ func _everyone_green() -> bool:
 
 
 func _set_state(new_state: State, duration: float, banner_text: String) -> void:
-	_sync.rpc(new_state, duration, scores, round_number, banner_text,
-		friendly_fire, rounds_to_win, round_minutes)
+	_sync(new_state, duration, scores, round_number, banner_text, friendly_fire, rounds_to_win, round_minutes)
+	for peer in ready_peers:
+		_sync.rpc_id(peer, new_state, duration, scores, round_number, banner_text,
+			friendly_fire, rounds_to_win, round_minutes)
 
 
 func _broadcast_lobby() -> void:
@@ -262,7 +266,9 @@ func _broadcast_lobby() -> void:
 			"team": player.get("team"),
 			"ready": _ready_peers.get(peer_id, false),
 		})
-	_sync_lobby.rpc(entries)
+	_sync_lobby(entries)
+	for peer in ready_peers:
+		_sync_lobby.rpc_id(peer, entries)
 
 
 ## Runs on every computer: the host's word on the match state.

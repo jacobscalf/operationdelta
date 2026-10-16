@@ -10,24 +10,8 @@ extends Node
 const STAND := 0
 const CROUCH := 1
 
-## Routes across Range 01, listed from the north (Terrorist) end to the south (Ops) end.
-## Ops bots walk them in reverse.
-const ROUTES := [
-	[Vector3(-40, 0, -40), Vector3(-40, 0, -20), Vector3(-38, 0, 0), Vector3(-35, 0, 20), Vector3(-30, 0, 40)],
-	[Vector3(-10, 0, -30), Vector3(-12, 0, -8), Vector3(-12, 0, 15), Vector3(-5, 0, 35)],
-	[Vector3(10, 0, -30), Vector3(12, 0, -10), Vector3(12, 0, 10), Vector3(5, 0, 35)],
-	[Vector3(40, 0, -30), Vector3(42, 0, -10), Vector3(35, 0, 10), Vector3(35, 0, 30), Vector3(20, 0, 40)],
-]
-
-## Open spots on Range 01 the bot wanders between once its route is done.
-const WAYPOINTS: Array[Vector3] = [
-	Vector3(0, 0, 30), Vector3(-15, 0, 30), Vector3(15, 0, 30), Vector3(-35, 0, 20),
-	Vector3(35, 0, 20), Vector3(-12, 0, 10), Vector3(12, 0, 10), Vector3(0, 0, -12),
-	Vector3(-15, 0, -20), Vector3(25, 0, -5), Vector3(-40, 0, -20), Vector3(40, 0, -30),
-	Vector3(0, 0, -30), Vector3(-28, 0, -45), Vector3(15, 0, -50), Vector3(0, 0, -45),
-	Vector3(-35, 0, 40), Vector3(35, 0, 40), Vector3(0, 0, 40), Vector3(-50, 0, 0),
-	Vector3(50, 0, 0),
-]
+## Routes and wander spots come from the map being played (see scripts/maps/).
+## Routes are listed from the Terrorist end to the Ops end; Ops bots walk them backwards.
 
 const SIGHT_RANGE := 90.0
 const LOOK_INTERVAL := 0.2  # how often it checks who it can see
@@ -63,7 +47,8 @@ func reset() -> void:
 	_seen_for = 0.0
 	_burst_left = 0
 	_stuck_timer = 0.0
-	_route.assign(ROUTES[randi() % ROUTES.size()])
+	var routes: Array = _map().get("routes")
+	_route.assign(routes[randi() % routes.size()])
 	if body.get("team") == 0:  # Ops start in the south, so walk the route backwards
 		_route.reverse()
 	_goal = _route.pop_front()
@@ -158,7 +143,7 @@ func _eye() -> Vector3:
 # --- Wandering -----------------------------------------------------------------------------
 
 func _walk(delta: float) -> Vector2:
-	if _goal == Vector3.INF or _flat_distance(body.global_position, _goal) < 2.0:
+	if _goal == Vector3.INF or _flat_distance(body.global_position, _goal) < 1.2:
 		_pick_new_goal()
 
 	# Every so often, check we're actually getting somewhere; if not, hop and try elsewhere.
@@ -184,10 +169,15 @@ func _pick_new_goal() -> void:
 	if not _route.is_empty():
 		_goal = _route.pop_front()  # follow this life's route first
 		return
-	var choice := WAYPOINTS[randi() % WAYPOINTS.size()]
+	var waypoints: Array[Vector3] = _map().get("waypoints")
+	var choice := waypoints[randi() % waypoints.size()]
 	while choice == _goal:
-		choice = WAYPOINTS[randi() % WAYPOINTS.size()]
+		choice = waypoints[randi() % waypoints.size()]
 	_goal = choice
+
+
+func _map() -> Node:
+	return get_tree().current_scene.get("map")
 
 
 func _flat_distance(a: Vector3, b: Vector3) -> float:

@@ -133,8 +133,9 @@ func _refresh() -> void:
 	_ready_button.modulate = GREEN if _my_ready else Color.WHITE
 	_ready_button.disabled = my_team == -1
 
-	_settings.text = "First to %d rounds   ·   %d-minute rounds   ·   Friendly fire %s" % [
-		_match.rounds_to_win, _match.round_minutes, "ON" if _match.friendly_fire else "OFF"]
+	_settings.text = "%s   ·   First to %d rounds   ·   %d-minute rounds   ·   Friendly fire %s" % [
+		Network.map_name, _match.rounds_to_win, _match.round_minutes,
+		"ON" if _match.friendly_fire else "OFF"]
 
 
 func _status_text() -> String:

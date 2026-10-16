@@ -6,6 +6,7 @@ var _address_edit := LineEdit.new()
 var _friendly_fire := CheckBox.new()
 var _rounds_to_win := SpinBox.new()
 var _round_minutes := SpinBox.new()
+var _map_picker := OptionButton.new()
 
 
 func _ready() -> void:
@@ -34,7 +35,16 @@ func _ready() -> void:
 	_name_edit.custom_minimum_size = Vector2(0, 40)
 	box.add_child(_name_edit)
 
-	box.add_child(_button("Practice (solo, with targets)", _on_practice))
+	# Map (used for Practice and Host; joining players get the host's map)
+	box.add_child(_label("Map", 16, HORIZONTAL_ALIGNMENT_LEFT))
+	_map_picker.custom_minimum_size = Vector2(0, 40)
+	for map_name: String in Network.MAPS:
+		_map_picker.add_item(map_name)
+		if map_name == Network.map_name:
+			_map_picker.select(_map_picker.item_count - 1)
+	box.add_child(_map_picker)
+
+	box.add_child(_button("Practice (solo; Range 01 has targets)", _on_practice))
 	box.add_child(_button("Host Match", _on_host))
 
 	# Host settings (only used when you host)
@@ -90,6 +100,7 @@ func _on_join() -> void:
 func _save_name() -> void:
 	var player_name := _name_edit.text.strip_edges()
 	Network.player_name = player_name if player_name != "" else "Player"
+	Network.map_name = _map_picker.get_item_text(_map_picker.selected)
 
 
 func _label(text: String, font_size: int,
