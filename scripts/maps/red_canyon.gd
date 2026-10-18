@@ -61,7 +61,7 @@ func _init() -> void:
 
 
 func build() -> void:
-	box(Vector3(190, 1, 150), Vector3(0, -0.5, 0), SAND_RED)
+	ground(Vector2(190, 150), SAND_RED)  # rolling dunes, built last
 	_build_cliffs()
 	_build_compound()
 	_build_market_hall()

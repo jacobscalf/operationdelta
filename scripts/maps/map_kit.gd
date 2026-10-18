@@ -44,11 +44,131 @@ func _ready() -> void:
 	_checker = _make_checker_texture()
 	_build_lighting()
 	build()
+	if _terrain_size != Vector2.ZERO:
+		for team_points: Array in team_spawns:
+			for point: Vector3 in team_points:
+				_flat_spot(point.x, point.z, 3.0)
+		_build_terrain()
 
 
 ## Override in each map.
 func build() -> void:
 	pass
+
+
+# --- Terrain ----------------------------------------------------------------------------------
+## Gentle dunes (meters, up and down) and how far around placed objects the ground stays flat.
+const DUNE_HEIGHT := 1.1
+const RIPPLE_HEIGHT := 0.3
+const FLAT_BLEND := 5.0
+## Sand piled against the foot of cliffs.
+const DRIFT_HEIGHT := 1.4
+const DRIFT_REACH := 6.0
+const TERRAIN_CELL := 1.0
+const ZONE_GRID := 10.0
+
+var _terrain_size := Vector2.ZERO
+var _terrain_color := SAND
+var _flat_grid := {}  # Vector2i cell -> [Vector3(x, z, radius), ...]
+var _drift_grid := {}  # Vector2i cell -> [Vector3(x, z, radius), ...]
+
+
+## Asks for rolling sand ground covering this area (built after everything else is placed,
+## so it can stay flat under all of it).
+func ground(area: Vector2, color: Color) -> void:
+	_terrain_size = area
+	_terrain_color = color
+
+
+## Marks a spot where the ground must stay flat (something is standing there).
+func _flat_spot(x: float, z: float, radius: float) -> void:
+	_add_to_grid(_flat_grid, Vector3(x, z, radius), radius + FLAT_BLEND)
+
+
+## Marks a spot where sand drifts up against rock.
+func _drift_spot(x: float, z: float, radius: float) -> void:
+	_add_to_grid(_drift_grid, Vector3(x, z, radius), radius + DRIFT_REACH)
+
+
+func _add_to_grid(grid: Dictionary, spot: Vector3, reach: float) -> void:
+	var low := Vector2i(floori((spot.x - reach) / ZONE_GRID), floori((spot.y - reach) / ZONE_GRID))
+	var high := Vector2i(floori((spot.x + reach) / ZONE_GRID), floori((spot.y + reach) / ZONE_GRID))
+	for cx in range(low.x, high.x + 1):
+		for cz in range(low.y, high.y + 1):
+			var key := Vector2i(cx, cz)
+			if not grid.has(key):
+				grid[key] = []
+			grid[key].append(spot)
+
+
+## How far (meters) from the nearest marked spot's edge; big if none are near.
+func _distance_to_spots(grid: Dictionary, x: float, z: float) -> float:
+	var key := Vector2i(floori(x / ZONE_GRID), floori(z / ZONE_GRID))
+	var best := 1000.0
+	for spot: Vector3 in grid.get(key, []):
+		best = minf(best, Vector2(x - spot.x, z - spot.y).length() - spot.z)
+	return best
+
+
+## Ground height at a point: dunes and ripples, sand drifts at cliff feet, all smoothly
+## faded out to exactly 0 near anything that was placed on the ground.
+func terrain_height(x: float, z: float) -> float:
+	var dunes := _noise.get_noise_2d(x * 0.035 + 300.0, z * 0.035) * DUNE_HEIGHT \
+		+ _noise.get_noise_2d(x * 0.11 + 700.0, z * 0.11) * RIPPLE_HEIGHT
+	var drift_distance := _distance_to_spots(_drift_grid, x, z)
+	var drift := DRIFT_HEIGHT * (1.0 - smoothstep(0.0, DRIFT_REACH, drift_distance))
+	var flatness := smoothstep(0.0, FLAT_BLEND, _distance_to_spots(_flat_grid, x, z))
+	return (dunes + drift) * flatness
+
+
+func _build_terrain() -> void:
+	var columns := int(_terrain_size.x / TERRAIN_CELL) + 1
+	var rows := int(_terrain_size.y / TERRAIN_CELL) + 1
+	var origin := Vector2(center.x - _terrain_size.x * 0.5, center.y - _terrain_size.y * 0.5)
+	var heights := PackedFloat32Array()
+	heights.resize(columns * rows)
+	for row in rows:
+		for col in columns:
+			heights[row * columns + col] = terrain_height(origin.x + col * TERRAIN_CELL, origin.y + row * TERRAIN_CELL)
+
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for row in rows:
+		for col in columns:
+			var x := origin.x + col * TERRAIN_CELL
+			var z := origin.y + row * TERRAIN_CELL
+			tool.set_uv(Vector2(x, z) * 0.25)
+			tool.add_vertex(Vector3(x, heights[row * columns + col], z))
+	for row in rows - 1:
+		for col in columns - 1:
+			var i := row * columns + col
+			tool.add_index(i)
+			tool.add_index(i + 1)
+			tool.add_index(i + columns)
+			tool.add_index(i + 1)
+			tool.add_index(i + columns + 1)
+			tool.add_index(i + columns)
+	tool.generate_normals()
+	tool.generate_tangents()
+
+	var body := StaticBody3D.new()
+	var instance := MeshInstance3D.new()
+	instance.mesh = tool.commit()
+	instance.material_override = material(_terrain_color)
+	body.add_child(instance)
+	# Collision: a height map lined up exactly with the visible grid.
+	var shape := CollisionShape3D.new()
+	var height_map := HeightMapShape3D.new()
+	height_map.map_width = columns
+	height_map.map_depth = rows
+	height_map.map_data = heights
+	shape.shape = height_map
+	shape.position = Vector3(center.x, 0, center.y)
+	shape.scale = Vector3(TERRAIN_CELL, 1, TERRAIN_CELL)
+	body.add_child(shape)
+	add_child(body)
+	# A flat slab underneath, in case anything ever slips past the edges.
+	box(Vector3(_terrain_size.x + 20, 1, _terrain_size.y + 20), Vector3(center.x, -2.0, center.y), _terrain_color)
 
 
 # --- Openings -------------------------------------------------------------------------------
@@ -81,6 +201,10 @@ func box(box_size: Vector3, pos: Vector3, color: Color, rot_y: float = 0.0, rot_
 	shape.shape = box_shape
 	body.add_child(shape)
 	add_child(body)
+	# Anything resting on the ground keeps the ground flat around it.
+	var touches_ground := pos.y - box_size.y * 0.5 < 0.6 and pos.y + box_size.y * 0.5 > -0.2
+	if touches_ground and box_size.x < 60.0 and box_size.z < 60.0:
+		_flat_spot(pos.x, pos.z, Vector2(box_size.x, box_size.z).length() * 0.5 + 0.5)
 	return body
 
 
@@ -102,6 +226,8 @@ func cylinder(radius: float, height: float, pos: Vector3, color: Color) -> Stati
 	shape.shape = cylinder_shape
 	body.add_child(shape)
 	add_child(body)
+	if pos.y < 0.6:
+		_flat_spot(pos.x, pos.z, radius + 0.5)
 	return body
 
 
@@ -196,6 +322,10 @@ func ramp(from: Vector3, to: Vector3, width: float, color: Color = CONCRETE) -> 
 	shape.shape = box_shape
 	body.add_child(shape)
 	add_child(body)
+	for point: Vector3 in [from, (from + to) * 0.5, to]:
+		if point.y < 0.6:
+			_flat_spot(point.x, point.z, width + 1.0)
+	_flat_spot(from.x, from.z, width + 1.0)  # the ground where you step on
 
 
 ## A natural rock wall along a chain of points: overlapping lumpy rock masses of uneven
@@ -289,6 +419,14 @@ func rock_mass(rock_size: Vector3, pos: Vector3, rotation_deg: Vector3, color: C
 	shape.shape = mesh.create_trimesh_shape()
 	body.add_child(shape)
 	add_child(body)
+	# Tall rock gets sand drifted up against its foot.
+	if rock_size.y > 5.0:
+		var along := basis.x
+		var t := -rock_size.x * 0.5
+		while t <= rock_size.x * 0.5:
+			var spot := pos + along * t
+			_drift_spot(spot.x, spot.z, rock_size.z * 0.5)
+			t += 2.0
 
 
 ## A rusty oil drum.
