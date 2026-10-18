@@ -254,19 +254,71 @@ const SANDBAG := Color(0.62, 0.55, 0.4)
 const METAL := Color(0.45, 0.47, 0.48)
 
 
-## A 1 m checker pattern projected in world space, so distances are easy to judge.
+## Which photo texture each color stands for: color -> [texture name, meters per tile,
+## optional tint the photo is multiplied by].
+## Maps can add their own colors to this (see red_canyon.gd). Colors that aren't listed
+## exactly use the closest listed one, made a little lighter or darker to match.
+var surfaces := {
+	SAND: ["red_sand", 4.0],
+	CONCRETE: ["concrete_wall_008", 2.5],
+	WALL: ["clay_plaster", 2.5],
+	WOOD: ["rough_wood", 1.5],
+	ROOF: ["box_profile_metal_sheet", 2.0],
+	ROCK: ["rock_boulder_dry", 5.0],
+	WRECK: ["rust_coarse_01", 2.0],
+	SANDBAG: ["clay_plaster", 1.5],
+	METAL: ["rust_coarse_01", 2.0],
+}
+var _textures := {}
+
+
+## A material for a color. Known surface colors get their photo texture, projected from
+## all sides in world space so it tiles cleanly on blocks of any size.
 func material(color: Color) -> StandardMaterial3D:
 	if _materials.has(color):
 		return _materials[color]
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.albedo_texture = _checker
+	var match_color: Variant = _closest_surface(color)
+	if match_color != null:
+		var surface: Array = surfaces[match_color]
+		var texture_name: String = surface[0]
+		mat.albedo_texture = _texture(texture_name + "_albedo")
+		mat.normal_enabled = true
+		mat.normal_texture = _texture(texture_name + "_normal")
+		mat.roughness_texture = _texture(texture_name + "_roughness")
+		mat.roughness = 1.0
+		mat.uv1_scale = Vector3.ONE / float(surface[1])
+		# Keep the light/dark variation of the requested color (e.g. rock shades).
+		var brightness := clampf(color.get_luminance() / maxf((match_color as Color).get_luminance(), 0.01), 0.6, 1.3)
+		var tint: Color = surface[2] if surface.size() > 2 else Color.WHITE
+		mat.albedo_color = Color(tint.r * brightness, tint.g * brightness, tint.b * brightness)
+	else:
+		mat.albedo_color = color
+		mat.albedo_texture = _checker
+		mat.uv1_scale = Vector3.ONE * 0.5
+		mat.roughness = 0.9
 	mat.uv1_triplanar = true
 	mat.uv1_world_triplanar = true
-	mat.uv1_scale = Vector3.ONE * 0.5
-	mat.roughness = 0.9
 	_materials[color] = mat
 	return mat
+
+
+## The listed surface color nearest to this one, or null if none is close.
+func _closest_surface(color: Color) -> Variant:
+	var best: Variant = null
+	var best_distance := 0.12
+	for known: Color in surfaces:
+		var distance := Vector3(color.r - known.r, color.g - known.g, color.b - known.b).length()
+		if distance < best_distance:
+			best_distance = distance
+			best = known
+	return best
+
+
+func _texture(file_name: String) -> Texture2D:
+	if not _textures.has(file_name):
+		_textures[file_name] = load("res://assets/textures/%s.jpg" % file_name)
+	return _textures[file_name]
 
 
 func _make_checker_texture() -> ImageTexture:

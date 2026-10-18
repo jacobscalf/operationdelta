@@ -7,11 +7,13 @@ extends "res://scripts/maps/map_kit.gd"
 
 const SAND_RED := Color(0.74, 0.52, 0.36)
 const ADOBE := Color(0.78, 0.62, 0.46)
-const RUST := Color(0.5, 0.32, 0.22)
 
 
 func _init() -> void:
 	display_name = "Red Canyon"
+	surfaces[SAND_RED] = ["red_sand", 4.0]
+	surfaces[ADOBE] = ["clay_plaster", 2.5]
+	surfaces[ROCK] = ["rock_boulder_dry", 5.0, Color(1.0, 0.66, 0.5)]  # warm red canyon rock
 	size = Vector2(180, 140)
 	sun_rotation = Vector3(-38, -60, 0)
 	sun_color = Color(1.0, 0.88, 0.74)
@@ -188,8 +190,8 @@ func _build_fuel_depot() -> void:
 	})
 	ramp(Vector3(38, 0, 26), Vector3(38, 3.5, 18.2), 1.8)  # up to the roof
 	lamp(Vector3(38, 2.8, 15), 0.8, 7.0)
-	cylinder(2.5, 5.0, Vector3(48, 0, 2), RUST)
-	cylinder(2.5, 5.0, Vector3(48, 0, -6), RUST)
+	cylinder(2.5, 5.0, Vector3(48, 0, 2), METAL)
+	cylinder(2.5, 5.0, Vector3(48, 0, -6), METAL)
 	box(Vector3(0.4, 0.4, 8), Vector3(44.5, 0.6, -2), METAL)  # pipe
 	sandbags(Vector3(42, 0, -12), 180)
 
