@@ -47,7 +47,7 @@ func _init() -> void:
 			Vector3(-40, 0, -50), Vector3(-72, 0, -44), Vector3(-74, 0, -10), Vector3(-74, 0, 20),
 			Vector3(-72, 0, 45)],
 		# Center: out the south gate, past the Market Hall, across the plaza.
-		[Vector3(62, 0, -40), Vector3(62, 0, -33), Vector3(35, 0, -20), Vector3(15, 0, -12),
+		[Vector3(62, 0, -40), Vector3(62, 0, -33), Vector3(54, 0, -32), Vector3(35, 0, -20), Vector3(15, 0, -12),
 			Vector3(14, 0, 8), Vector3(5, 0, 22), Vector3(-24, 0, 38), Vector3(-45, 0, 50),
 			Vector3(-65, 0, 56)],
 		# Wadi: down the dry riverbed on the east side, then west along the south cliffs.
@@ -199,9 +199,10 @@ func _build_fuel_depot() -> void:
 ## The wadi: a dry riverbed lane along the east side, between rock banks too tall to
 ## jump. One gap in the west bank lets you cross to the fuel depot.
 func _build_wadi() -> void:
-	cliff([Vector2(58, -30), Vector2(58, 2)], 2.0, 3.0)
-	cliff([Vector2(58, 9), Vector2(58, 40)], 2.0, 3.0)
-	cliff([Vector2(72, -30), Vector2(72, 40)], 4.0, 3.0)
+	# (Rock pieces overlap past their end points by ~3.5 m, so the ends here are pulled in.)
+	cliff([Vector2(58, -27), Vector2(58, -1)], 2.0, 3.0)
+	cliff([Vector2(58, 12), Vector2(58, 37)], 2.0, 3.0)
+	cliff([Vector2(72, -27), Vector2(72, 37)], 4.0, 3.0)
 	boulder(Vector3(61, 0, -10), 1.0)
 	boulder(Vector3(68, 0, 15), 1.2)
 	boulder(Vector3(62, 0, 30), 0.9)
@@ -237,3 +238,11 @@ func _build_cover() -> void:
 	sandbags(Vector3(-36, 0, -40), 180)
 	crate(Vector3(30, 0, 45), 10)
 	crate(Vector3(-30, 0, 62), 30)
+	# Oil drums
+	for spot: Vector3 in [Vector3(51, 0, 8), Vector3(51.7, 0, 8.6), Vector3(51.2, 0, 9.4), Vector3(-6, 0, 8),
+			Vector3(-6.7, 0, 8.4), Vector3(80, 0, -48), Vector3(80.6, 0, -47.3), Vector3(-63, 0, 47),
+			Vector3(12, 0, -36), Vector3(-41, 0, 2.5)]:
+		barrel(spot)
+	barrel(Vector3(52.5, 0, 7.5), true)
+	barrel(Vector3(-5, 0, 9.5), true)
+	barrel(Vector3(13, 0, -35), true)

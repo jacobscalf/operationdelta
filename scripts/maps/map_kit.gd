@@ -33,10 +33,14 @@ const WINDOW_W := 1.2
 var _checker: ImageTexture
 var _materials := {}
 var _rng := RandomNumberGenerator.new()
+var _noise := FastNoiseLite.new()
 
 
 func _ready() -> void:
 	_rng.seed = 1234  # the same "random" rocks on every computer
+	_noise.seed = 1234
+	_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_noise.frequency = 1.0
 	_checker = _make_checker_texture()
 	_build_lighting()
 	build()
@@ -120,8 +124,28 @@ func wall(a: Vector2, b: Vector2, height: float, color: Color, openings: Array =
 		_wall_piece(a, dir, rot_y, cursor, cut[0], 0.0, height, thickness, base_y, color)
 		_wall_piece(a, dir, rot_y, cut[0], cut[1], 0.0, cut[2], thickness, base_y, color)  # sill
 		_wall_piece(a, dir, rot_y, cut[0], cut[1], cut[3], height, thickness, base_y, color)  # lintel
+		if cut[3] < height - 0.05:  # a frame around doors and windows (not full-height gates)
+			_frame(a, dir, rot_y, cut, thickness, base_y)
 		cursor = cut[1]
 	_wall_piece(a, dir, rot_y, cursor, length, 0.0, height, thickness, base_y, color)
+
+
+## A wooden frame around an opening: it sticks out a little from both faces of the wall
+## but sits inside the wall's edges, so the opening stays the same size.
+func _frame(a: Vector2, dir: Vector2, rot_y: float, cut: Array, thickness: float, base_y: float) -> void:
+	var trim := 0.12
+	var depth := thickness + 0.1
+	var bottom: float = cut[2]
+	var top: float = cut[3]
+	for edge: float in [cut[0] - trim * 0.5, cut[1] + trim * 0.5]:  # left and right posts
+		var p := a + dir * edge
+		box(Vector3(trim, top - bottom + trim, depth), Vector3(p.x, base_y + (bottom + top) * 0.5, p.y), WOOD, rot_y)
+	var center: float = (cut[0] + cut[1]) * 0.5
+	var mid := a + dir * center
+	var width: float = cut[1] - cut[0] + trim * 2.0
+	box(Vector3(width, trim, depth), Vector3(mid.x, base_y + top + trim * 0.5, mid.y), WOOD, rot_y)
+	if bottom > 0.05:
+		box(Vector3(width, trim, depth), Vector3(mid.x, base_y + bottom - trim * 0.5, mid.y), WOOD, rot_y)
 
 
 func _wall_piece(a: Vector2, dir: Vector2, rot_y: float, from: float, to: float, bottom: float,
@@ -174,28 +198,106 @@ func ramp(from: Vector3, to: Vector3, width: float, color: Color = CONCRETE) -> 
 	add_child(body)
 
 
-## A rough rock wall along a chain of points: chunky blocks with uneven heights and tilts.
+## A natural rock wall along a chain of points: overlapping lumpy rock masses of uneven
+## height, with smaller rocks piled at the foot of tall cliffs.
 func cliff(points: Array, height: float, thickness: float, color: Color = ROCK) -> void:
 	for i in points.size() - 1:
 		var a: Vector2 = points[i]
 		var b: Vector2 = points[i + 1]
 		var length := a.distance_to(b)
-		var pieces := maxi(1, ceili(length / 8.0))
+		var pieces := maxi(1, ceili(length / 7.0))
 		var dir := (b - a) / length
+		var side := Vector2(-dir.y, dir.x)
 		var rot_y := rad_to_deg(atan2(-dir.y, dir.x))
 		for p in pieces:
-			var mid := a + dir * (length * (p + 0.5) / pieces)
-			var h := height * _rng.randf_range(0.75, 1.15)
-			var shade := color.darkened(_rng.randf_range(-0.08, 0.12))
-			box(Vector3(length / pieces + 2.0, h, thickness * _rng.randf_range(0.85, 1.2)),
-				Vector3(mid.x, h * 0.5 - 0.3, mid.y), shade,
-				rot_y + _rng.randf_range(-6, 6), _rng.randf_range(-4, 4), _rng.randf_range(-3, 3))
+			var mid := a + dir * (length * (p + 0.5) / pieces) + side * _rng.randf_range(-0.8, 0.8)
+			var h := height * _rng.randf_range(0.75, 1.2)
+			var shade := color.darkened(_rng.randf_range(-0.06, 0.1))
+			rock_mass(Vector3(length / pieces + 7.0, h, thickness * _rng.randf_range(0.85, 1.25)),
+				Vector3(mid.x, h * 0.5 - 0.5, mid.y),
+				Vector3(_rng.randf_range(-4, 4), rot_y + _rng.randf_range(-8, 8), _rng.randf_range(-4, 4)), shade)
+			if height > 5.0:  # loose rock piled at the foot of tall cliffs
+				var foot := mid + side * thickness * 0.55 * (1.0 if _rng.randf() < 0.5 else -1.0)
+				var fh := h * _rng.randf_range(0.25, 0.4)
+				rock_mass(Vector3(length / pieces * 0.7, fh, thickness * 0.6), Vector3(foot.x, fh * 0.4, foot.y),
+					Vector3(0, rot_y + _rng.randf_range(-25, 25), 0), shade.darkened(0.05))
 
 
 ## A loose boulder.
 func boulder(pos: Vector3, scale: float, color: Color = ROCK) -> void:
-	box(Vector3(2.2, 1.6, 1.8) * scale, pos + Vector3(0, 0.6 * scale, 0), color.darkened(_rng.randf_range(0.0, 0.15)),
-		_rng.randf_range(0, 90), _rng.randf_range(-10, 10), _rng.randf_range(-10, 10))
+	rock_mass(Vector3(2.4, 1.7, 2.0) * scale, pos + Vector3(0, 0.6 * scale, 0),
+		Vector3(_rng.randf_range(-10, 10), _rng.randf_range(0, 90), _rng.randf_range(-10, 10)),
+		color.darkened(_rng.randf_range(0.0, 0.12)))
+
+
+## A natural-looking rock: a finely divided block whose surface is pushed in and out by
+## noise (big bulges plus small cracks), with rounded corners and a narrower top.
+## The same seed is used on every computer, so everyone gets identical rocks.
+func rock_mass(rock_size: Vector3, pos: Vector3, rotation_deg: Vector3, color: Color) -> void:
+	var cell := 1.1  # meters between surface points
+	var box_mesh := BoxMesh.new()
+	box_mesh.size = rock_size
+	box_mesh.subdivide_width = clampi(int(rock_size.x / cell), 2, 28)
+	box_mesh.subdivide_height = clampi(int(rock_size.y / cell), 2, 24)
+	box_mesh.subdivide_depth = clampi(int(rock_size.z / cell), 2, 16)
+	var arrays := box_mesh.get_mesh_arrays()
+	var source: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+
+	var basis := Basis.from_euler(rotation_deg * (PI / 180.0))
+	var half := rock_size * 0.5
+	var big := clampf(minf(minf(rock_size.x, rock_size.y), rock_size.z) * 0.2, 0.25, 2.0)
+	var verts := PackedVector3Array()
+	verts.resize(source.size())
+	for i in source.size():
+		var v := source[i]
+		var n := v / half  # -1..1 inside the block
+		# Narrower toward the top, and corners pulled in a little so it isn't box-shaped.
+		var taper := 1.0 - 0.15 * (n.y * 0.5 + 0.5)
+		v.x *= taper
+		v.z *= taper
+		v *= 1.0 - 0.08 * (n.x * n.x * n.y * n.y + n.y * n.y * n.z * n.z + n.x * n.x * n.z * n.z)
+		var world := pos + basis * v
+		# Big bulges, medium lumps and small cracks pushed in and out of the surface...
+		var push := _noise.get_noise_3dv(world * 0.12) * big \
+			+ _noise.get_noise_3dv(world * 0.3 + Vector3(40, 0, 0)) * big * 0.45 \
+			+ _noise.get_noise_3dv(world * 0.8) * 0.2
+		v += v.normalized() * push
+		# ...and a jagged, uneven skyline along the top.
+		if n.y > 0.5:
+			v.y += _noise.get_noise_2d(world.x * 0.25, world.z * 0.25) * rock_size.y * 0.22 * (n.y - 0.5) * 2.0
+		verts[i] = v
+
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for index in indices:
+		var v := verts[index]
+		tool.set_uv(Vector2(v.x + v.z, v.y) * 0.25)
+		tool.add_vertex(v)
+	tool.index()  # merge the corners and edges so the rock shades smoothly
+	tool.generate_normals()
+	tool.generate_tangents()
+	var mesh := tool.commit()
+
+	var body := StaticBody3D.new()
+	body.transform = Transform3D(basis, pos)
+	var instance := MeshInstance3D.new()
+	instance.mesh = mesh
+	instance.material_override = material(color)
+	body.add_child(instance)
+	var shape := CollisionShape3D.new()
+	shape.shape = mesh.create_trimesh_shape()
+	body.add_child(shape)
+	add_child(body)
+
+
+## A rusty oil drum.
+func barrel(pos: Vector3, tipped: bool = false) -> void:
+	if tipped:
+		var body := cylinder(0.32, 0.9, pos + Vector3(0, 0.32 - 0.45, 0), METAL)
+		body.rotation_degrees = Vector3(90, _rng.randf_range(0, 180), 0)
+	else:
+		cylinder(0.32, 0.9, pos, METAL)
 
 
 ## A burnt-out truck: cover you can hide behind or jump onto the back of.
